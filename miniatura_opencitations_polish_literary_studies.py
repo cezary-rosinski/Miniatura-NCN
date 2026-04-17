@@ -9,7 +9,6 @@ import pickle
 from opencitations_token import oc_token
 import csv
 from collections import Counter
-# from core_api_key import core_api_key
 from functools import partial
 import zipfile
 import io
@@ -17,12 +16,15 @@ import tarfile
 import time
 import matplotlib.pyplot as plt
 import numpy as np
+import ast
+from collections import defaultdict
+from pathlib import Path
 
 headers = {"authorization": oc_token}
 #%% Pipeline
 #1 Read file with journals information
 
-df = pd.read_excel('data/czasopisma_literaturoznawcze_scopus.xlsx')
+df = pd.read_excel('data/czasopisma_literaturoznawcze.xlsx')
 
 #2 Harvest OMID of the venue based on ISSN
 issns_list = [e for e in df['ISSN'].to_list() + df['e-ISSN'].to_list() if pd.notnull(e)]
@@ -58,11 +60,11 @@ for issn in tqdm(issns_list):
             response_json = response.json()
 
             if response_json:
-                ids = response_json[0].get('id', '')
-                omids = [e.replace('omid:', '') for e in ids.split(' ') if 'omid:' in e]
+                ids = [e.get('id') for e in response_json]
+                omids = sorted([elem.replace('omid:', '') for elem in [ele for sub in [[el for el in e.split(' ')] for e in ids] for ele in sub] if 'omid:' in elem])
 
                 if omids:
-                    issn_omid_dict.update({issn: omids[0]})
+                    issn_omid_dict.update({issn: omids})
                 else:
                     issn_omid_dict.update({issn: None})
             else:
@@ -93,14 +95,21 @@ for issn in tqdm(issns_list):
 
 df['OMID for ISSN'] = df['ISSN'].apply(lambda x: issn_omid_dict.get(x))
 df['OMID for e-ISSN'] = df['e-ISSN'].apply(lambda x: issn_omid_dict.get(x))
-df['OMIDs identical'] = df[['OMID for ISSN', 'OMID for e-ISSN']].apply(lambda x: x['OMID for ISSN'] == x['OMID for e-ISSN'] if pd.notna(x['OMID for ISSN']) and pd.notna(x['OMID for e-ISSN']) else '', axis=1)
-df['OMID'] = df[['OMID for ISSN', 'OMID for e-ISSN']].apply(lambda x: x['OMID for ISSN'] if pd.notna(x['OMID for ISSN']) else x['OMID for e-ISSN'] if pd.notna(x['OMID for e-ISSN']) else '', axis=1)
-df['in OpenCitations'] = df['OMID'].apply(lambda x: True if pd.notnull(x) and x!='' else False)
+# df['OMIDs identical'] = df[['OMID for ISSN', 'OMID for e-ISSN']].apply(lambda x: x['OMID for ISSN'] == x['OMID for e-ISSN'] if pd.notna(x['OMID for ISSN']) and pd.notna(x['OMID for e-ISSN']) else '', axis=1)
+# df['OMID'] = df[['OMID for ISSN', 'OMID for e-ISSN']].apply(lambda x: x['OMID for ISSN'] if pd.notna(x['OMID for ISSN']) else x['OMID for e-ISSN'] if pd.notna(x['OMID for e-ISSN']) else '', axis=1)
+df["OMID"] = df.apply(
+    lambda x: sorted(set((x["OMID for ISSN"] or []) + (x["OMID for e-ISSN"] or [])))
+    if (x["OMID for ISSN"] is not None or x["OMID for e-ISSN"] is not None)
+    else None,
+    axis=1
+)
+# df['in OpenCitations'] = df['OMID'].apply(lambda x: True if pd.notnull(x) and x!='' else False)
+df['in OpenCitations'] = df['OMID'].apply(lambda x: bool(x))
 
-df.to_excel('data/literary_journals_scopus_with_omid.xlsx', index=False)
+df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
 
 # 3 Count of citations for a venue based on issn
-df = pd.read_excel('data/literary_journals_scopus_with_omid.xlsx')
+df = pd.read_excel('data/literary_journals_opencitations.xlsx')
 df_omid = df.loc[df['OMID'].notna()]
 issns_list = [e for e in df_omid['ISSN'].to_list() + df_omid['e-ISSN'].to_list() if pd.notnull(e)]
 issns_list = list(dict.fromkeys(issns_list))
@@ -152,14 +161,200 @@ for issn in tqdm(issns_list):
 
 df['citations counted'] = df[['ISSN', 'e-ISSN']].apply(lambda x: issn_citations_dict.get(x['ISSN'], issn_citations_dict.get(x['e-ISSN'], 0)), axis=1)
 
-df.to_excel('data/literary_journals_scopus_with_omid_citations_counted.xlsx', index=False)
+df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
+
+
+
+#%% # all articles for the venue -- meta csv -- select venue column based on ID, keep all the rows related
+file_path = "data/literary_journals_opencitations.xlsx"
+df = pd.read_excel(file_path)
+df_omid = df.loc[df['OMID'].notna()]
+df_omid['OMID'] = df_omid['OMID'].apply(
+       lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+)
+
+omids = sorted(set([el for sub in [e for e in df_omid['OMID'].to_list()] for el in sub]))
+# omids = ['br/0607826441', 'br/0606841622', 'br/06011671914', 'br/06901277869']
+df_exploded = df_omid.explode('OMID')
+omid_title_dict = dict(zip(df_exploded['OMID'], df_exploded['Tytuł']))
+# omid_title_dict = dict(zip(df['OMID'].to_list(), df['Tytuł'].to_list()))
+
+tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
+
+filtered_parts = []
+omids_set = set(omids)
+
+with tarfile.open(tar_path, "r") as tar:
+    for member in tqdm(tar.getmembers()):
+        if not (member.isfile() and member.name.startswith("output_csv_2026_01_14/") and member.name.endswith(".csv")):
+            continue
+
+        f = tar.extractfile(member)
+        if f is None:
+            continue
+
+        df_iter = pd.read_csv(f)
+        df_iter["venue_omid"] = (
+            df_iter["venue"]
+            .astype("string")
+            .str.extract(r"omid:(br/\d+)", expand=False)
+            )
+        df_filtered = df_iter[df_iter["venue_omid"].isin(omids_set)]
+
+        if not df_filtered.empty:
+            filtered_parts.append(df_filtered)
+
+df_final = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+df_final['venue_name'] = df_final['venue_omid'].apply(lambda x: omid_title_dict.get(x))
+
+
+omid_issn_dict = defaultdict(list)
+
+for key, omid_list in issn_omid_dict.items():
+    if isinstance(omid_list, list):
+        for omid in omid_list:
+            if omid and key not in omid_issn_dict[omid]:
+                omid_issn_dict[omid].append(key)
+omid_issn_dict = dict(omid_issn_dict)
+
+df_final['issn'] = df_final['venue_omid'].apply(lambda x: omid_issn_dict.get(x))
+
+df_final.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
+                
+# df_iter.to_excel('data/venue_error.xlsx', index=False)
+
+#%% opencitations article counter and citation-article ratio
+
+df = pd.read_excel("data/literary_journals_opencitations.xlsx")
+df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
+
+df['internal_id'] = range(1, len(df) + 1)
+
+df['OMID'] = df_omid['OMID'].apply(
+    lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+)
+
+df_exploded = df.explode('OMID')
+omid_internal_id_dict = {k:v for k,v in dict(zip(df_exploded['OMID'], df_exploded['internal_id'])).items() if pd.notna(k)}
+
+df_articles['venue_internal_id'] = df_articles['venue_omid'].apply(lambda x: omid_internal_id_dict.get(x))
+
+articles_counted = dict(Counter(df_articles['venue_internal_id'].to_list()))
+df['articles_counter'] = df['internal_id'].apply(lambda x: articles_counted.get(x))
+df['citation_article_ratio'] = df[['citations counted', 'articles_counter']].apply(lambda x: x['citations counted']/x['articles_counter'], axis=1)
+
+df.to_excel('data/literary_journals_opencitations_final.xlsx', index=False)
+
+df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
+
+#%% opencitations index unzipping
+
+outer_zip_path = Path("data/OpenCitations/Index_09.04.2026.zip")
+level1_dir = Path("data/OpenCitations/Index_09.04.2026")
+level2_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
+
+# krok 1
+level1_dir.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(outer_zip_path, "r") as z:
+    z.extractall(level1_dir)
+
+# krok 2
+level2_dir.mkdir(parents=True, exist_ok=True)
+zip_files = list(level1_dir.glob("*.zip"))
+
+for zip_path in tqdm(zip_files):
+    extract_subdir = level2_dir / zip_path.stem
+    extract_subdir.mkdir(exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(extract_subdir)
+
+#%% opencitations citations of the article
+
+df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
+df_articles['volume'] = (
+    df_articles['volume']
+    .astype(str)
+    .str.strip()
+    .replace({'nan': None, 'None': None})
+)
+
+df_articles = df_articles.drop_duplicates()
+
+article_omids = [[el.replace('omid:', '') for el in e.split(' ') if 'omid:' in el][0] for e in df_articles['id'].to_list()]
+
+df_articles['article_omid'] = article_omids
+
+article_omids_set = set([f'omid:{e}' for e in article_omids])
+
+base_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
+csv_files = list(base_dir.rglob("*.csv"))
+
+usecols = ["id", "citing", "cited"]
+dtype_map = {
+    "id": "string",
+    "citing": "string",
+    "cited": "string"
+}
+
+# article_citations = []
+# for csv_path in tqdm(csv_files):
+#     df_iter = pd.read_csv(csv_path, usecols=usecols, dtype=dtype_map)
+#     df_filtered = df_iter[df_iter["cited"].isin(article_omids_set)]
+    
+#     if not df_filtered.empty:
+#         article_citations.append(df_filtered)
+
+def process_csv(csv_path):
+    df_iter = pd.read_csv(csv_path, usecols=usecols, dtype=dtype_map)
+    df_filtered = df_iter[df_iter["cited"].isin(article_omids_set)]
+    return df_filtered if not df_filtered.empty else None
+
+with ThreadPoolExecutor(max_workers=8) as executor:
+    results = list(tqdm(executor.map(process_csv, csv_files), total=len(csv_files)))
+
+article_citations = [df for df in results if df is not None]
+
+if article_citations:
+    article_citations_df = pd.concat(article_citations, ignore_index=True)
+else:
+    article_citations_df = pd.DataFrame(columns=usecols)
+
+df_citations = pd.concat(article_citations, ignore_index=True) if article_citations else pd.DataFrame()
+df_citations.to_excel('data/citations_of_literary_journal_articles_opencitations.xlsx', index=False)
+
+article_citations_counter = {k.replace('omid:', ''):v for k,v in dict(Counter(df_citations['cited'])).items()}
+df_articles['citedby_count'] = df_articles['article_omid'].apply(lambda x: article_citations_counter.get(x))
+df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #%% Visualisations
 
 # =========================
 # 1. Wczytanie danych
 # =========================
-file_path = "data/literary_journals_scopus_with_omid_citations_counted.xlsx"
+file_path = "data/literary_journals_opencitations.xlsx"
 df = pd.read_excel(file_path)
 
 # Upewnienie się, że kolumna z cytowaniami jest liczbowa
@@ -215,7 +410,7 @@ plt.show()
 # =========================
 # Wczytanie danych
 # =========================
-file_path = "data/literary_journals_scopus_with_omid_citations_counted.xlsx"
+file_path = "data/literary_journals_opencitations.xlsx"
 df = pd.read_excel(file_path)
 
 df["citations counted"] = pd.to_numeric(df["citations counted"], errors="coerce").fillna(0)
@@ -276,66 +471,6 @@ plt.ylabel("Count")
 plt.xticks(rotation=30)
 plt.tight_layout()
 plt.show()
-
-#%% # all articles for the venue -- meta csv -- select venue column based on ID, keep all the rows related
-file_path = "data/literary_journals_scopus_with_omid_citations_counted.xlsx"
-df = pd.read_excel(file_path)
-# omids = [e for e in df['OMID'].to_list() if pd.notna(e)]
-# omids = ['br/0607826441', 'br/0606841622', 'br/06011671914', 'br/06901277869']
-omid_title_dict = dict(zip(df['OMID'].to_list(), df['Tytuł'].to_list()))
-
-tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
-
-filtered_parts = []
-omids_set = set(omids)
-
-with tarfile.open(tar_path, "r") as tar:
-    for member in tqdm(tar.getmembers()):
-        if not (member.isfile() and member.name.startswith("output_csv_2026_01_14/") and member.name.endswith(".csv")):
-            continue
-
-        f = tar.extractfile(member)
-        if f is None:
-            continue
-
-        df_iter = pd.read_csv(f)
-        df_iter["omid"] = (
-            df_iter["venue"]
-            .astype("string")
-            .str.extract(r"omid:(br/\d+)", expand=False)
-            )
-        df_filtered = df_iter[df_iter["omid"].isin(omids_set)]
-
-        if not df_filtered.empty:
-            filtered_parts.append(df_filtered)
-
-df_final = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
-
-df_final.to_excel('data/articles_of_literary_journals_scopus.xlsx', index=False)
-                
-# df_iter.to_excel('data/venue_error.xlsx', index=False)
-
-#%%
-
-df = pd.read_excel("data/literary_journals_scopus_with_omid_citations_counted.xlsx")
-df_final = pd.read_excel('data/articles_of_literary_journals_scopus.xlsx')
-
-articles_counted = dict(Counter(df_final['omid'].to_list()))
-df['articles_counter'] = df['OMID'].apply(lambda x: articles_counted.get(x))
-df['citation_article_ratio'] = df[['citations counted', 'articles_counter']].apply(lambda x: x['citations counted']/x['articles_counter'], axis=1)
-
-df.to_excel('data/literary_journals_scopus_opencitation_final.xlsx', index=False)
-
-
-
-
-
-
-
-
-
-
-
 
 
 

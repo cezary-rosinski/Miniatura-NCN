@@ -1,6 +1,6 @@
 ﻿/scopus_api.pl
 /data
-/_pycache_
+/__pycache__
 /.git
 opencitations_token.py
 scopus_api.py

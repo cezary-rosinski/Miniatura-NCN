@@ -23,7 +23,7 @@ page_size = 25
 max_retries = 5
 
 #%% issn set
-df = pd.read_excel('data/literary_journals_scopus_opencitation_final.xlsx')
+df = pd.read_excel('data/literary_journals_opencitations_final.xlsx')
 issns_list = [e for e in df['ISSN'].to_list() + df['e-ISSN'].to_list() if pd.notnull(e)]
 issns_set = set(issns_list)
 #%% def for single request
@@ -153,7 +153,9 @@ for issn in tqdm(issns_set):
             })
             
 df_scopus = pd.DataFrame(all_rows)
-df_scopus.head()
+df_scopus.to_excel('data/articles_of_literary_journals_scopus.xlsx', index=False)
+
+
 #%%
 
 

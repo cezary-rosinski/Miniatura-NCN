@@ -29,20 +29,20 @@ data = {
 response = requests.post(url, files=files, data=data)
 
 # Check response
-print(response.status_code)
-print(response.text)
+# print(response.status_code)
+# print(response.text)
 
-type(ast.literal_eval(response.text))
+# type(ast.literal_eval(response.text))
 
 
 # Send GET request (streaming for large files)
-response = requests.post(json.dumps(response.text)["download_url"], stream=True)
+response = requests.get(json.loads(response.text)["download_url"], stream=True)
 
 # Extract filename from URL (like curl -O does)
 filename = url.split("/")[-1]
 
 # Save file
-with open(filename, "wb") as f:
+with open('test.zip', "wb") as f:
     for chunk in response.iter_content(chunk_size=8192):
         if chunk:
             f.write(chunk)
@@ -50,5 +50,9 @@ with open(filename, "wb") as f:
 print(f"Downloaded: {filename}")
 
 
+#next steps -- unzipping -- converter from Arcangelo
 
-dir(ast)
+
+
+
+
