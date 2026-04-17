@@ -249,25 +249,25 @@ df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=
 
 #%% opencitations index unzipping
 
-outer_zip_path = Path("data/OpenCitations/Index_09.04.2026.zip")
-level1_dir = Path("data/OpenCitations/Index_09.04.2026")
-level2_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
+# outer_zip_path = Path("data/OpenCitations/Index_09.04.2026.zip")
+# level1_dir = Path("data/OpenCitations/Index_09.04.2026")
+# level2_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
 
-# krok 1
-level1_dir.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(outer_zip_path, "r") as z:
-    z.extractall(level1_dir)
+# # krok 1
+# level1_dir.mkdir(parents=True, exist_ok=True)
+# with zipfile.ZipFile(outer_zip_path, "r") as z:
+#     z.extractall(level1_dir)
 
-# krok 2
-level2_dir.mkdir(parents=True, exist_ok=True)
-zip_files = list(level1_dir.glob("*.zip"))
+# # krok 2
+# level2_dir.mkdir(parents=True, exist_ok=True)
+# zip_files = list(level1_dir.glob("*.zip"))
 
-for zip_path in tqdm(zip_files):
-    extract_subdir = level2_dir / zip_path.stem
-    extract_subdir.mkdir(exist_ok=True)
+# for zip_path in tqdm(zip_files):
+#     extract_subdir = level2_dir / zip_path.stem
+#     extract_subdir.mkdir(exist_ok=True)
 
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(extract_subdir)
+#     with zipfile.ZipFile(zip_path, "r") as z:
+#         z.extractall(extract_subdir)
 
 #%% opencitations citations of the article
 
@@ -327,14 +327,28 @@ article_citations_counter = {k.replace('omid:', ''):v for k,v in dict(Counter(df
 df_articles['citedby_count'] = df_articles['article_omid'].apply(lambda x: article_citations_counter.get(x))
 df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
 
+#%% porównanie venue & publisher
 
+df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
 
+venue_publisher = [(v, p.split(' [')[0]) for v,p in list(zip(df_articles['venue_name'], df_articles['publisher']))]
 
+venue_publisher_unique = set(venue_publisher)
+venue_publisher_count = dict(Counter(venue_publisher))
 
+df_vp = pd.DataFrame(
+    [
+        {"journal": k[0], "publisher": k[1], "count": v}
+        for k, v in venue_publisher_count.items()
+    ]
+)
 
+# opcjonalnie sortowanie
+df_vp = df_vp.sort_values(by="count", ascending=False)
 
+df_vp.to_excel('data/literary_journal_articles_opencitations_venue_publisher.xlsx', index=False)
 
-
+###### odfiltrować tylko te poprawne i na nich pracować#####
 
 
 
