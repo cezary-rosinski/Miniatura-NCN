@@ -153,6 +153,8 @@ for issn in tqdm(issns_set):
             })
             
 df_scopus = pd.DataFrame(all_rows)
+df_scopus = df_scopus[df_scopus['eid'].notna()].drop(columns='issn_query').drop_duplicates()
+
 df_scopus.to_excel('data/articles_of_literary_journals_scopus.xlsx', index=False)
 
 
