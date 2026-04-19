@@ -3,6 +3,7 @@ import pandas as pd
 from tqdm import tqdm
 from scopus_api import scopus_api_key
 import time
+from collections import Counter
 
 #%% scopus api
 
@@ -155,8 +156,37 @@ for issn in tqdm(issns_set):
 df_scopus = pd.DataFrame(all_rows)
 df_scopus = df_scopus[df_scopus['eid'].notna()].drop(columns='issn_query').drop_duplicates()
 
+df = pd.read_excel("data/literary_journals_opencitations_final.xlsx")
+issn_to_id = dict(zip(df['ISSN'], df['internal_id']))
+eissn_to_id = dict(zip(df['e-ISSN'], df['internal_id']))
+issn_to_id = issn_to_id | eissn_to_id
+
+df_scopus['venue_internal_id'] = df_scopus[['issn_returned', 'eissn_returned']].apply(lambda x: issn_to_id.get(f"{x['issn_returned'][:4]}-{x['issn_returned'][4:]}") if pd.notna(x['issn_returned']) else issn_to_id.get(f"{x['eissn_returned'][:4]}-{x['eissn_returned'][4:]}") if pd.notna(x['eissn_returned']) else None, axis=1)
+
 df_scopus.to_excel('data/articles_of_literary_journals_scopus.xlsx', index=False)
 
+scopus_venue_article_counter = dict(Counter(df_scopus['venue_internal_id']))
+
+df['scopus_articles_counted'] = df['internal_id'].apply(lambda x: scopus_venue_article_counter.get(x))
+
+scopus_venue_citation_counter = (
+        df_scopus.groupby("venue_internal_id")["citedby_count"]
+        .sum()
+        .astype(int)
+        .to_dict()
+)
+
+df['scopus_citations_counted'] = df['internal_id'].apply(lambda x: scopus_venue_citation_counter.get(x))
+df['scopus_citation_article_ratio'] = df[['scopus_citations_counted', 'scopus_articles_counted']].apply(lambda x: x['scopus_citations_counted']/x['scopus_articles_counted'], axis=1)
+
+df["oc_more_articles"] = (
+    df["article_counter_proper"].fillna(-1) > df["scopus_articles_counted"].fillna(-1)
+)
+df["oc_more_citations"] = (
+    df["citations_counted_proper"].fillna(-1) > df["scopus_articles_counted"].fillna(-1)
+)
+
+df.to_excel('data/literary_journals_opencitations_scopus.xlsx', index=False)
 
 #%%
 
