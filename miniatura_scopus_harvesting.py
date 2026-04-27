@@ -24,7 +24,7 @@ page_size = 25
 max_retries = 5
 
 #%% issn set
-df = pd.read_excel('data/literary_journals_opencitations_final.xlsx')
+df = pd.read_excel('data/literary_journals_opencitations.xlsx')
 issns_list = [e for e in df['ISSN'].to_list() + df['e-ISSN'].to_list() if pd.notnull(e)]
 issns_set = set(issns_list)
 #%% def for single request
@@ -156,7 +156,7 @@ for issn in tqdm(issns_set):
 df_scopus = pd.DataFrame(all_rows)
 df_scopus = df_scopus[df_scopus['eid'].notna()].drop(columns='issn_query').drop_duplicates()
 
-df = pd.read_excel("data/literary_journals_opencitations_final.xlsx")
+df = pd.read_excel("data/literary_journals_opencitations.xlsx")
 issn_to_id = dict(zip(df['ISSN'], df['internal_id']))
 eissn_to_id = dict(zip(df['e-ISSN'], df['internal_id']))
 issn_to_id = issn_to_id | eissn_to_id
@@ -180,15 +180,14 @@ df['scopus_citations_counted'] = df['internal_id'].apply(lambda x: scopus_venue_
 df['scopus_citation_article_ratio'] = df[['scopus_citations_counted', 'scopus_articles_counted']].apply(lambda x: x['scopus_citations_counted']/x['scopus_articles_counted'], axis=1)
 
 df["oc_more_articles"] = (
-    df["article_counter_proper"].fillna(-1) > df["scopus_articles_counted"].fillna(-1)
+    df["oc_articles_counted"].fillna(-1) > df["scopus_articles_counted"].fillna(-1)
 )
 df["oc_more_citations"] = (
-    df["citations_counted_proper"].fillna(-1) > df["scopus_articles_counted"].fillna(-1)
+    df["oc_citations_counted"].fillna(-1) > df["scopus_articles_counted"].fillna(-1)
 )
 
 df.to_excel('data/literary_journals_opencitations_scopus.xlsx', index=False)
 
-#%%
 
 
 

@@ -112,59 +112,59 @@ df['in OpenCitations'] = df['OMID'].apply(lambda x: bool(x))
 df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
 
 # 3 Count of citations for a venue based on issn
-df = pd.read_excel('data/literary_journals_opencitations.xlsx')
-df_omid = df.loc[df['OMID'].notna()]
-issns_list = [e for e in df_omid['ISSN'].to_list() + df_omid['e-ISSN'].to_list() if pd.notnull(e)]
-issns_list = list(dict.fromkeys(issns_list))
+# df = pd.read_excel('data/literary_journals_opencitations.xlsx')
+# df_omid = df.loc[df['OMID'].notna()]
+# issns_list = [e for e in df_omid['ISSN'].to_list() + df_omid['e-ISSN'].to_list() if pd.notnull(e)]
+# issns_list = list(dict.fromkeys(issns_list))
 
-issn_citations_dict = {}
+# issn_citations_dict = {}
 
-MIN_INTERVAL = 0.36
-last_request_time = 0
-max_retries = 5
+# MIN_INTERVAL = 0.36
+# last_request_time = 0
+# max_retries = 5
 
-for issn in tqdm(issns_list):
-    # issn = issns_list[0]
-    # pilnowanie limitu requestów
-    elapsed = time.monotonic() - last_request_time
-    if elapsed < MIN_INTERVAL:
-        time.sleep(MIN_INTERVAL - elapsed)
+# for issn in tqdm(issns_list):
+#     # issn = issns_list[0]
+#     # pilnowanie limitu requestów
+#     elapsed = time.monotonic() - last_request_time
+#     if elapsed < MIN_INTERVAL:
+#         time.sleep(MIN_INTERVAL - elapsed)
 
-    url = f'https://api.opencitations.net/index/v2/venue-citation-count/issn:{issn}'
+#     url = f'https://api.opencitations.net/index/v2/venue-citation-count/issn:{issn}'
 
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, headers=headers, timeout=60)
-            last_request_time = time.monotonic()
+#     for attempt in range(max_retries):
+#         try:
+#             response = requests.get(url, headers=headers, timeout=60)
+#             last_request_time = time.monotonic()
 
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                wait_time = float(retry_after) if retry_after else 5 * (attempt + 1)
-                time.sleep(wait_time)
-                continue
+#             if response.status_code == 429:
+#                 retry_after = response.headers.get("Retry-After")
+#                 wait_time = float(retry_after) if retry_after else 5 * (attempt + 1)
+#                 time.sleep(wait_time)
+#                 continue
 
-            response.raise_for_status()
-            response_json = response.json()
+#             response.raise_for_status()
+#             response_json = response.json()
 
-            if response_json:
-                citations_counted = int(response_json[0].get('count'))
-                issn_citations_dict.update({issn: citations_counted})
+#             if response_json:
+#                 citations_counted = int(response_json[0].get('count'))
+#                 issn_citations_dict.update({issn: citations_counted})
 
-            else:
-                issn_citations_dict.update({issn: None})
+#             else:
+#                 issn_citations_dict.update({issn: None})
 
-            break
+#             break
 
-        except requests.RequestException as e:
-            if attempt == max_retries - 1:
-                print(f'Błąd dla {issn}: {e}')
-                issn_citations_dict.update({issn: None})
-            else:
-                time.sleep(3 * (attempt + 1))
+#         except requests.RequestException as e:
+#             if attempt == max_retries - 1:
+#                 print(f'Błąd dla {issn}: {e}')
+#                 issn_citations_dict.update({issn: None})
+#             else:
+#                 time.sleep(3 * (attempt + 1))
 
-df['citations counted'] = df[['ISSN', 'e-ISSN']].apply(lambda x: issn_citations_dict.get(x['ISSN'], issn_citations_dict.get(x['e-ISSN'], 0)), axis=1)
+# df['citations counted'] = df[['ISSN', 'e-ISSN']].apply(lambda x: issn_citations_dict.get(x['ISSN'], issn_citations_dict.get(x['e-ISSN'], 0)), axis=1)
 
-df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
+# df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
 
 
 
@@ -207,9 +207,8 @@ with tarfile.open(tar_path, "r") as tar:
         if not df_filtered.empty:
             filtered_parts.append(df_filtered)
 
-df_final = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
-df_final['venue_name'] = df_final['venue_omid'].apply(lambda x: omid_title_dict.get(x))
-
+df_articles = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+df_articles['venue_name'] = df_articles['venue_omid'].apply(lambda x: omid_title_dict.get(x))
 
 omid_issn_dict = defaultdict(list)
 
@@ -220,58 +219,38 @@ for key, omid_list in issn_omid_dict.items():
                 omid_issn_dict[omid].append(key)
 omid_issn_dict = dict(omid_issn_dict)
 
-df_final['issn'] = df_final['venue_omid'].apply(lambda x: omid_issn_dict.get(x))
+df_articles['issn'] = df_articles['venue_omid'].apply(lambda x: omid_issn_dict.get(x))
 
-df_final.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
-                
-# df_iter.to_excel('data/venue_error.xlsx', index=False)
+# porównanie venue & publisher
 
-#%% opencitations article counter and citation-article ratio
+# venue_publisher = [(v, p.split(' [')[0]) for v,p in list(zip(df_articles['venue_name'], df_articles['publisher']))]
 
-df = pd.read_excel("data/literary_journals_opencitations.xlsx")
-df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
+# venue_publisher_unique = set(venue_publisher)
+# venue_publisher_count = dict(Counter(venue_publisher))
 
-df['internal_id'] = range(1, len(df) + 1)
+# df_vp = pd.DataFrame(
+#     [
+#         {"journal": k[0], "publisher": k[1], "count": v}
+#         for k, v in venue_publisher_count.items()
+#     ]
+# )
 
-df['OMID'] = df_omid['OMID'].apply(
-    lambda x: ast.literal_eval(x) if isinstance(x, str) else x
-)
+# # opcjonalnie sortowanie
+# df_vp = df_vp.sort_values(by="count", ascending=False)
 
-df_exploded = df.explode('OMID')
-omid_internal_id_dict = {k:v for k,v in dict(zip(df_exploded['OMID'], df_exploded['internal_id'])).items() if pd.notna(k)}
+# df_vp.to_excel('data/literary_journal_articles_opencitations_venue_publisher.xlsx', index=False)
 
-df_articles['venue_internal_id'] = df_articles['venue_omid'].apply(lambda x: omid_internal_id_dict.get(x))
+df_vp = gsheet_to_df('17BXcIB9lnwF16qpUBUH1yYFN7nV82lUZM2pkWKPDnmU', 'Sheet1')
+df_vp = df_vp.loc[df_vp['false_info'].isna()]
 
-articles_counted = dict(Counter(df_articles['venue_internal_id'].to_list()))
-df['articles_counter'] = df['internal_id'].apply(lambda x: articles_counted.get(x))
-df['citation_article_ratio'] = df[['citations counted', 'articles_counter']].apply(lambda x: x['citations counted']/x['articles_counter'], axis=1)
+df_articles['publisher_name'] = df_articles['publisher'].apply(lambda x: x.split(' [')[0].strip())
 
-df.to_excel('data/literary_journals_opencitations_final.xlsx', index=False)
+vp_correct = [(v.strip(), p.strip()) for v,p in zip(df_vp['journal'],df_vp['publisher'])]
+
+df_articles = df_articles[df_articles.set_index(["venue_name", "publisher_name"]).index.isin(vp_correct)]
 
 df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
-
-#%% opencitations index unzipping
-
-# outer_zip_path = Path("data/OpenCitations/Index_09.04.2026.zip")
-# level1_dir = Path("data/OpenCitations/Index_09.04.2026")
-# level2_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
-
-# # krok 1
-# level1_dir.mkdir(parents=True, exist_ok=True)
-# with zipfile.ZipFile(outer_zip_path, "r") as z:
-#     z.extractall(level1_dir)
-
-# # krok 2
-# level2_dir.mkdir(parents=True, exist_ok=True)
-# zip_files = list(level1_dir.glob("*.zip"))
-
-# for zip_path in tqdm(zip_files):
-#     extract_subdir = level2_dir / zip_path.stem
-#     extract_subdir.mkdir(exist_ok=True)
-
-#     with zipfile.ZipFile(zip_path, "r") as z:
-#         z.extractall(extract_subdir)
-
+                
 #%% opencitations citations of the article
 
 df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
@@ -280,6 +259,13 @@ df_articles['volume'] = (
     .astype(str)
     .str.strip()
     .replace({'nan': None, 'None': None})
+)
+
+df_articles_duplicates = df_articles[df_articles.duplicated(keep=False)]
+
+df_articles_duplicates.to_excel(
+    'data/literary_journal_articles_opencitations_duplicates.xlsx',
+    index=False
 )
 
 df_articles = df_articles.drop_duplicates()
@@ -300,14 +286,6 @@ dtype_map = {
     "cited": "string"
 }
 
-# article_citations = []
-# for csv_path in tqdm(csv_files):
-#     df_iter = pd.read_csv(csv_path, usecols=usecols, dtype=dtype_map)
-#     df_filtered = df_iter[df_iter["cited"].isin(article_omids_set)]
-    
-#     if not df_filtered.empty:
-#         article_citations.append(df_filtered)
-
 def process_csv(csv_path):
     df_iter = pd.read_csv(csv_path, usecols=usecols, dtype=dtype_map)
     df_filtered = df_iter[df_iter["cited"].isin(article_omids_set)]
@@ -324,93 +302,48 @@ else:
     article_citations_df = pd.DataFrame(columns=usecols)
 
 df_citations = pd.concat(article_citations, ignore_index=True) if article_citations else pd.DataFrame()
-df_citations.to_excel('data/citations_of_literary_journal_articles_opencitations.xlsx', index=False)
-
-article_citations_counter = {k.replace('omid:', ''):v for k,v in dict(Counter(df_citations['cited'])).items()}
-df_articles['citedby_count'] = df_articles['article_omid'].apply(lambda x: article_citations_counter.get(x))
-df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
-
-#%% porównanie venue & publisher
-
-df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
-
-venue_publisher = [(v, p.split(' [')[0]) for v,p in list(zip(df_articles['venue_name'], df_articles['publisher']))]
-
-venue_publisher_unique = set(venue_publisher)
-venue_publisher_count = dict(Counter(venue_publisher))
-
-df_vp = pd.DataFrame(
-    [
-        {"journal": k[0], "publisher": k[1], "count": v}
-        for k, v in venue_publisher_count.items()
-    ]
-)
-
-# opcjonalnie sortowanie
-df_vp = df_vp.sort_values(by="count", ascending=False)
-
-df_vp.to_excel('data/literary_journal_articles_opencitations_venue_publisher.xlsx', index=False)
-
-#%% filtrowanie po venue and publisher
-
-###### odfiltrować tylko te poprawne i na nich pracować#####
-df_vp = gsheet_to_df('17BXcIB9lnwF16qpUBUH1yYFN7nV82lUZM2pkWKPDnmU', 'Sheet1')
-df_vp = df_vp.loc[df_vp['false_info'].isna()]
-
-df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
-df_articles['publisher_name'] = df_articles['publisher'].apply(lambda x: x.split(' [')[0].strip())
-
-vp_correct = [(v.strip(), p.strip()) for v,p in zip(df_vp['journal'],df_vp['publisher'])]
-
-df_filtered = df_articles[df_articles.set_index(["venue_name", "publisher_name"]).index.isin(vp_correct)]
-df_filtered.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
-
-
-#zliczyć artykuły i cytowania w df journals
-df = pd.read_excel("data/literary_journals_opencitations_final.xlsx")
-
-articles_counted = dict(Counter(df_articles['venue_internal_id']))
-df['article_counter_proper'] = df['internal_id'].apply(lambda x: articles_counted.get(x))
-
-#wyfiltrować cytowania
-df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
-df_citations = pd.read_excel('data/citations_of_literary_journal_articles_opencitations.xlsx')
-df_citations['cited'] = df_citations['cited'].str.strip()
-
-article_omids_set = set([f'omid:{e}'.strip() for e in df_articles['article_omid']])
-
-df_filtered = df_citations[df_citations["cited"].isin(article_omids_set)]
-df_filtered.to_excel('data/citations_of_literary_journal_articles_opencitations.xlsx', index=False)
-
-df_agg = (
-    df_articles.groupby("venue_internal_id")
-    .agg(
-        total_citations=("citedby_count", "sum"),
-        articles_count=("article_omid", "count")
-    )
-    .reset_index()
-)
-
-venue_citations = dict(zip(df_agg['venue_internal_id'], df_agg['total_citations']))
-df['citations_counted_proper'] = df['internal_id'].apply(lambda x: venue_citations.get(x))
-df['citation_article_ratio_proper'] = df[['citations_counted_proper', 'article_counter_proper']].apply(lambda x: x['citations_counted_proper']/x['article_counter_proper'], axis=1)
-
-df.to_excel('data/literary_journals_opencitations_final.xlsx', index=False)
 
 # usunięcie citing = cited
-df_citations = pd.read_excel('data/citations_of_literary_journal_articles_opencitations.xlsx')
 wrong_citations = df_citations[df_citations['citing'] == df_citations['cited']]
+
+wrong_citations.to_excel(
+    'data/citations_of_literary_journal_articles_opencitations_self-citations.xlsx',
+    index=False
+)
+
 df_citations = df_citations[df_citations['citing'] != df_citations['cited']]
-df_citations.to_excel('data/citations_of_literary_journal_articles_opencitations_final.xlsx', index=False)
-# redukcja citedby_count ze względu na citing = cited
-df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
-wrong_citations = [e.replace('omid:', '') for e in wrong_citations['cited'].to_list()]
-wrong_citations_counted = dict(Counter(wrong_citations))
-# test = df_articles.loc[df_articles['article_omid'].isin(wrong_citations)]
-df_articles['citedby_count'] = df_articles[['article_omid', 'citedby_count']].apply(lambda x: x['citedby_count']-wrong_citations_counted.get(x['article_omid'],0), axis=1)
-df_articles.to_excel('data/literary_journal_articles_opencitations_final.xlsx', index=False)
-# redukcja w citations_counted_proper
-df = pd.read_excel("data/literary_journals_opencitations_final.xlsx")
+
+
+
+#%% opencitations article counter and citation-article ratio
+#counting preparation
+
+df['internal_id'] = range(1, len(df) + 1)
+
+df['OMID'] = df_omid['OMID'].apply(
+    lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+)
+
+df_exploded = df.explode('OMID')
+omid_internal_id_dict = {k:v for k,v in dict(zip(df_exploded['OMID'], df_exploded['internal_id'])).items() if pd.notna(k)}
+
+df_articles['venue_internal_id'] = df_articles['venue_omid'].apply(lambda x: omid_internal_id_dict.get(x))
+
+#citations counted -- article level
+
+article_omids = [[el.replace('omid:', '') for el in e.split(' ') if 'omid:' in el][0] for e in df_citations['cited'].to_list()]
+
+df_citations['article_omid'] = article_omids
+df_citations.to_excel('data/citations_of_literary_journal_articles_opencitations.xlsx', index=False)
+
+citations_counted = dict(Counter(df_citations['article_omid'].to_list()))
+
+df_articles['citedby_count'] = df_articles['article_omid'].apply(lambda x: citations_counted.get(x))
+
+df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
+
+#articles counted and citations counted -- venue level
+
 df_agg = (
     df_articles.groupby("venue_internal_id")
     .agg(
@@ -419,10 +352,18 @@ df_agg = (
     )
     .reset_index()
 )
+
+articles_counted = dict(zip(df_agg['venue_internal_id'], df_agg['articles_count']))
 venue_citations = dict(zip(df_agg['venue_internal_id'], df_agg['total_citations']))
-df['citations_counted_proper'] = df['internal_id'].apply(lambda x: venue_citations.get(x))
-df['citation_article_ratio_proper'] = df[['citations_counted_proper', 'article_counter_proper']].apply(lambda x: x['citations_counted_proper']/x['article_counter_proper'], axis=1)
-df.to_excel('data/literary_journals_opencitations_final.xlsx', index=False)
+
+df['oc_articles_counted'] = df['internal_id'].apply(lambda x: articles_counted.get(x))
+df['oc_citations_counted'] = df['internal_id'].apply(lambda x: venue_citations.get(x))
+df['oc_citation_article_ratio'] = df[['oc_citations_counted', 'oc_articles_counted']].apply(lambda x: x['oc_citations_counted']/x['oc_articles_counted'], axis=1)
+
+df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
+
+
+
 
 
 

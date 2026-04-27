@@ -4,3 +4,4 @@
 /.git
 opencitations_token.py
 scopus_api.py
+/storage
