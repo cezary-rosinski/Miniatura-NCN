@@ -1173,6 +1173,48 @@ print(f"OC citation rows: {len(df_oc_citations)}")
 print(f"Output directory: {OUTPUT_DIR}")
 
 
+#%%
+
+from oc_validator.interface.gui import make_gui
+
+csv_path = r"C:\Users\pracownik\Documents\Miniatura-NCN\data\final_pipeline_output\02_oai_to_opencitations\example_metadata.csv"
+report_path = r"C:\Users\pracownik\Documents\Miniatura-NCN\data\out_validate_meta.jsonl"
+output_html_path = 'data/oc_validator.html'
+
+make_gui(csv_path, report_path, output_html_path)
+
+
+
+
+
+
+
+
+from oc_validator.main import Validator
+
+# Basic validation
+v = Validator(r"C:\Users\pracownik\Documents\Miniatura-NCN\data\final_pipeline_output\02_oai_to_opencitations\example_metadata.csv", 'data')
+v.validate()
+
+
+
+
+## findings
+# I need to run the whole code in python 3.12
+# tam, gdzie mam typ z crossref, wziąć typ z crossref, a reszta anystyle
+# I need to have a test validation to catch errors that can be fixed
+# new cleaning added
+# final validation
+# deleting the mistakes from the meta and citatons file with dedicated OC tool
+# double check that there is ultimate validation with no errors
+# w artykule namierzyć miejsca dla human-in-the-loop, 
+
+
+
+
+
+
+
 
 
 
