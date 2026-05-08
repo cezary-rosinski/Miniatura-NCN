@@ -14,6 +14,7 @@ from ipysigma import Sigma
 # =========================
 
 file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
+# file_path = "data/citations_of_jjs.xlsx"
 df = pd.read_excel(file_path)
 
 df = df[["citing", "cited"]].dropna().drop_duplicates()
@@ -120,7 +121,7 @@ nx.set_node_attributes(G, label_dict, name="label")
 
 Sigma.write_html(
     G,
-    'data/OC_network.html',
+    'data/OC_network_jjs.html',
     G,
     node_color="node_type",     # kolor wg typu węzła
     node_size="pagerank",       # rozmiar wg PageRank

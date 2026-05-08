@@ -186,6 +186,7 @@ tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
 
 filtered_parts = []
 omids_set = set(omids)
+# omids_set = set(["br/06203148478"])
 
 with tarfile.open(tar_path, "r") as tar:
     for member in tqdm(tar.getmembers()):
@@ -208,6 +209,7 @@ with tarfile.open(tar_path, "r") as tar:
             filtered_parts.append(df_filtered)
 
 df_articles = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+# df_articles.to_excel('data/jjs.xlsx', index=False)
 df_articles['venue_name'] = df_articles['venue_omid'].apply(lambda x: omid_title_dict.get(x))
 
 omid_issn_dict = defaultdict(list)
@@ -334,6 +336,7 @@ df_articles['venue_internal_id'] = df_articles['venue_omid'].apply(lambda x: omi
 article_omids = [[el.replace('omid:', '') for el in e.split(' ') if 'omid:' in el][0] for e in df_citations['cited'].to_list()]
 
 df_citations['article_omid'] = article_omids
+# df_citations.to_excel('data/citations_of_jjs.xlsx', index=False)
 df_citations.to_excel('data/citations_of_literary_journal_articles_opencitations.xlsx', index=False)
 
 citations_counted = dict(Counter(df_citations['article_omid'].to_list()))
