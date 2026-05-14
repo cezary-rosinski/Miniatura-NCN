@@ -1,14 +1,12 @@
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
-
-#%% Sigma
-
-import pandas as pd
-import networkx as nx
 from tqdm import tqdm
 from ipysigma import Sigma
+import tarfile
+import regex as re
 
+#%% Sigma -- article level
 # =========================
 # 1. Wczytanie i przygotowanie danych
 # =========================
@@ -121,7 +119,287 @@ nx.set_node_attributes(G, label_dict, name="label")
 
 Sigma.write_html(
     G,
-    'data/OC_network_jjs.html',
+    'data/OC_network.html',
+    #'data/OC_network_jjs.html',
+    G,
+    node_color="node_type",     # kolor wg typu węzła
+    node_size="pagerank",       # rozmiar wg PageRank
+    node_label="label",         # etykieta
+    node_label_size="in_degree" # większe etykiety dla częściej cytowanych
+)
+
+#%% Sigma -- author level
+file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
+# file_path = "data/citations_of_jjs.xlsx"
+df = pd.read_excel(file_path)
+
+# omids = [e.replace('omid:', '') for e in df['citing'].to_list() + df['cited'].to_list()]
+omids_set = set(df['citing'].to_list() + df['cited'].to_list())
+
+tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
+
+filtered_parts = []
+# omids_set = set(["br/06203148478"])
+
+with tarfile.open(tar_path, "r") as tar:
+    for member in tqdm(tar.getmembers()):
+        if not (member.isfile() and member.name.startswith("output_csv_2026_01_14/") and member.name.endswith(".csv")):
+            continue
+
+        f = tar.extractfile(member)
+        if f is None:
+            continue
+
+        df_iter = pd.read_csv(f)
+        df_iter["article_omid"] = (
+            df_iter["id"]
+            .astype("string")
+            .str.extract(r"(omid:br/\d+)", expand=False)
+        )
+        df_filtered = df_iter[df_iter["article_omid"].isin(omids_set)]
+
+        if not df_filtered.empty:
+            filtered_parts.append(df_filtered)
+  
+df_articles = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+
+omid_pattern = r'omid:ra/\d+'
+df_articles["omid_author"] = (
+        df_articles["author"]
+        .fillna("")
+        .apply(lambda x: re.findall(omid_pattern, x))
+)
+omid_dict = dict(zip(df_articles['article_omid'], df_articles['omid_author']))
+df['citing'] = df['citing'].apply(lambda x: omid_dict.get(x))
+df['cited'] = df['cited'].apply(lambda x: omid_dict.get(x))
+df = df.explode('citing')
+df = df.explode('cited')
+df = df.loc[(df['citing'].notnull()) &
+            (df['cited'].notnull())]
+# =========================
+# 2. Budowa grafu skierowanego
+# =========================
+
+G = nx.DiGraph()
+
+for _, row in tqdm(df.iterrows(), total=len(df)):
+    citing = row["citing"]
+    cited = row["cited"]
+
+    # klasyfikacja węzłów zrobimy później, więc tu tylko dodajemy węzły
+    if not G.has_node(citing):
+        G.add_node(citing)
+
+    if not G.has_node(cited):
+        G.add_node(cited)
+
+    # krawędź skierowana: citing -> cited
+    G.add_edge(citing, cited, weight=1)
+
+# =========================
+# 3. Typy węzłów
+# =========================
+
+citing_set = set(df["citing"])
+cited_set = set(df["cited"])
+
+node_type = {}
+node_color = {}
+
+for node in G.nodes():
+    in_citing = node in citing_set
+    in_cited = node in cited_set
+
+    if in_citing and in_cited:
+        node_type[node] = "both"
+        node_color[node] = "#984ea3"   # fiolet
+    elif in_cited:
+        node_type[node] = "cited_only"
+        node_color[node] = "#e41a1c"   # czerwony
+    elif in_citing:
+        node_type[node] = "citing_only"
+        node_color[node] = "#377eb8"   # niebieski
+    else:
+        node_type[node] = "other"
+        node_color[node] = "#999999"
+
+nx.set_node_attributes(G, node_type, name="node_type")
+nx.set_node_attributes(G, node_color, name="color")
+
+# =========================
+# 4. Metryki sieciowe
+# =========================
+
+in_degree_dict = dict(G.in_degree())
+out_degree_dict = dict(G.out_degree())
+degree_dict = dict(G.degree())
+
+pagerank_dict = nx.pagerank(G, alpha=0.85)
+
+# HITS bywa niestabilny dla niektórych sieci, więc warto zabezpieczyć
+try:
+    hubs_dict, authorities_dict = nx.hits(G, max_iter=1000, normalized=True)
+except Exception:
+    hubs_dict = {n: 0 for n in G.nodes()}
+    authorities_dict = {n: 0 for n in G.nodes()}
+
+nx.set_node_attributes(G, in_degree_dict, name="in_degree")
+nx.set_node_attributes(G, out_degree_dict, name="out_degree")
+nx.set_node_attributes(G, degree_dict, name="degree")
+nx.set_node_attributes(G, pagerank_dict, name="pagerank")
+nx.set_node_attributes(G, authorities_dict, name="authority")
+nx.set_node_attributes(G, hubs_dict, name="hub")
+
+# =========================
+# 5. Prostsza etykieta
+# =========================
+
+# jeśli chcesz, można skrócić omid w etykietach
+label_dict = {}
+for node in G.nodes():
+    label_dict[node] = node.replace("omid:", "")
+
+nx.set_node_attributes(G, label_dict, name="label")
+
+# =========================
+# 6. Interaktywny podgląd w Jupyterze
+# =========================
+
+# Sigma(
+#     G,
+#     node_color="node_type",     # kolor wg typu węzła
+#     node_size="pagerank",       # rozmiar wg PageRank
+#     node_label="label",         # etykieta
+#     node_label_size="in_degree" # większe etykiety dla częściej cytowanych
+# )
+
+Sigma.write_html(
+    G,
+    'data/OC_network_authors.html',
+    G,
+    node_color="node_type",     # kolor wg typu węzła
+    node_size="pagerank",       # rozmiar wg PageRank
+    node_label="label",         # etykieta
+    node_label_size="in_degree" # większe etykiety dla częściej cytowanych
+)
+#%% Sigma -- venue level
+file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
+# file_path = "data/citations_of_jjs.xlsx"
+df = pd.read_excel(file_path)
+
+omid_pattern = r'omid:br/\d+'
+df_articles["omid_venue"] = (
+        df_articles["venue"]
+        .fillna("")
+        .apply(lambda x: re.findall(omid_pattern, x))
+)
+omid_dict = dict(zip(df_articles['article_omid'], df_articles['omid_venue']))
+df['citing'] = df['citing'].apply(lambda x: omid_dict.get(x))
+df['cited'] = df['cited'].apply(lambda x: omid_dict.get(x))
+df = df.explode('citing')
+df = df.explode('cited')
+df = df.loc[(df['citing'].notnull()) &
+            (df['cited'].notnull())]
+# =========================
+# 2. Budowa grafu skierowanego
+# =========================
+
+G = nx.DiGraph()
+
+for _, row in tqdm(df.iterrows(), total=len(df)):
+    citing = row["citing"]
+    cited = row["cited"]
+
+    # klasyfikacja węzłów zrobimy później, więc tu tylko dodajemy węzły
+    if not G.has_node(citing):
+        G.add_node(citing)
+
+    if not G.has_node(cited):
+        G.add_node(cited)
+
+    # krawędź skierowana: citing -> cited
+    G.add_edge(citing, cited, weight=1)
+
+# =========================
+# 3. Typy węzłów
+# =========================
+
+citing_set = set(df["citing"])
+cited_set = set(df["cited"])
+
+node_type = {}
+node_color = {}
+
+for node in G.nodes():
+    in_citing = node in citing_set
+    in_cited = node in cited_set
+
+    if in_citing and in_cited:
+        node_type[node] = "both"
+        node_color[node] = "#984ea3"   # fiolet
+    elif in_cited:
+        node_type[node] = "cited_only"
+        node_color[node] = "#e41a1c"   # czerwony
+    elif in_citing:
+        node_type[node] = "citing_only"
+        node_color[node] = "#377eb8"   # niebieski
+    else:
+        node_type[node] = "other"
+        node_color[node] = "#999999"
+
+nx.set_node_attributes(G, node_type, name="node_type")
+nx.set_node_attributes(G, node_color, name="color")
+
+# =========================
+# 4. Metryki sieciowe
+# =========================
+
+in_degree_dict = dict(G.in_degree())
+out_degree_dict = dict(G.out_degree())
+degree_dict = dict(G.degree())
+
+pagerank_dict = nx.pagerank(G, alpha=0.85)
+
+# HITS bywa niestabilny dla niektórych sieci, więc warto zabezpieczyć
+try:
+    hubs_dict, authorities_dict = nx.hits(G, max_iter=1000, normalized=True)
+except Exception:
+    hubs_dict = {n: 0 for n in G.nodes()}
+    authorities_dict = {n: 0 for n in G.nodes()}
+
+nx.set_node_attributes(G, in_degree_dict, name="in_degree")
+nx.set_node_attributes(G, out_degree_dict, name="out_degree")
+nx.set_node_attributes(G, degree_dict, name="degree")
+nx.set_node_attributes(G, pagerank_dict, name="pagerank")
+nx.set_node_attributes(G, authorities_dict, name="authority")
+nx.set_node_attributes(G, hubs_dict, name="hub")
+
+# =========================
+# 5. Prostsza etykieta
+# =========================
+
+# jeśli chcesz, można skrócić omid w etykietach
+label_dict = {}
+for node in G.nodes():
+    label_dict[node] = node.replace("omid:", "")
+
+nx.set_node_attributes(G, label_dict, name="label")
+
+# =========================
+# 6. Interaktywny podgląd w Jupyterze
+# =========================
+
+# Sigma(
+#     G,
+#     node_color="node_type",     # kolor wg typu węzła
+#     node_size="pagerank",       # rozmiar wg PageRank
+#     node_label="label",         # etykieta
+#     node_label_size="in_degree" # większe etykiety dla częściej cytowanych
+# )
+
+Sigma.write_html(
+    G,
+    'data/OC_network_venues.html',
     G,
     node_color="node_type",     # kolor wg typu węzła
     node_size="pagerank",       # rozmiar wg PageRank
