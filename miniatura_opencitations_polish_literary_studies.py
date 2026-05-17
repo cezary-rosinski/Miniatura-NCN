@@ -21,6 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 import sys
 sys.path.insert(1, r'C:\Users\pracownik\Documents\IBL-PAN-Python')
+sys.path.insert(1, r'C:\Users\Cezary\Documents\IBL-PAN-Python')
 from my_functions import gsheet_to_df
 
 headers = {"authorization": oc_token}
@@ -28,6 +29,7 @@ headers = {"authorization": oc_token}
 #1 Read file with journals information
 
 df = pd.read_excel('data/czasopisma_literaturoznawcze.xlsx')
+# df = gsheet_to_df('15v-vCBAwf3wckipfJAPx8p-jz-kL0QugDk_6jVYItEk', 'Arkusz1')
 
 #2 Harvest OMID of the venue based on ISSN
 issns_list = [e for e in df['ISSN'].to_list() + df['e-ISSN'].to_list() if pd.notnull(e)]
@@ -110,6 +112,7 @@ df["OMID"] = df.apply(
 df['in OpenCitations'] = df['OMID'].apply(lambda x: bool(x))
 
 df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
+# df.to_excel('data/js_seville_opencitations.xlsx', index=False)
 
 # 3 Count of citations for a venue based on issn
 # df = pd.read_excel('data/literary_journals_opencitations.xlsx')
@@ -170,6 +173,7 @@ df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
 
 #%% # all articles for the venue -- meta csv -- select venue column based on ID, keep all the rows related
 file_path = "data/literary_journals_opencitations.xlsx"
+# file_path = "data/js_seville_opencitations.xlsx"
 df = pd.read_excel(file_path)
 df_omid = df.loc[df['OMID'].notna()]
 df_omid['OMID'] = df_omid['OMID'].apply(
@@ -180,6 +184,7 @@ omids = sorted(set([el for sub in [e for e in df_omid['OMID'].to_list()] for el 
 # omids = ['br/0607826441', 'br/0606841622', 'br/06011671914', 'br/06901277869']
 df_exploded = df_omid.explode('OMID')
 omid_title_dict = dict(zip(df_exploded['OMID'], df_exploded['Tytuł']))
+# omid_title_dict = dict(zip(df_exploded['OMID'], df_exploded['Journal']))
 # omid_title_dict = dict(zip(df['OMID'].to_list(), df['Tytuł'].to_list()))
 
 tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
@@ -224,8 +229,8 @@ omid_issn_dict = dict(omid_issn_dict)
 df_articles['issn'] = df_articles['venue_omid'].apply(lambda x: omid_issn_dict.get(x))
 
 # porównanie venue & publisher
-
-# venue_publisher = [(v, p.split(' [')[0]) for v,p in list(zip(df_articles['venue_name'], df_articles['publisher']))]
+# venue_publisher = df_articles.loc[(df_articles['venue_name'].notnull()) & (df_articles['publisher'].notnull())]
+# venue_publisher = [(v, p.split(' [')[0]) for v,p in list(zip(venue_publisher['venue_name'], venue_publisher['publisher']))]
 
 # venue_publisher_unique = set(venue_publisher)
 # venue_publisher_count = dict(Counter(venue_publisher))
@@ -241,6 +246,7 @@ df_articles['issn'] = df_articles['venue_omid'].apply(lambda x: omid_issn_dict.g
 # df_vp = df_vp.sort_values(by="count", ascending=False)
 
 # df_vp.to_excel('data/literary_journal_articles_opencitations_venue_publisher.xlsx', index=False)
+# df_vp.to_excel('data/js_seville_opencitations_venue_publisher.xlsx', index=False)
 
 df_vp = gsheet_to_df('17BXcIB9lnwF16qpUBUH1yYFN7nV82lUZM2pkWKPDnmU', 'Sheet1')
 df_vp = df_vp.loc[df_vp['false_info'].isna()]
@@ -252,10 +258,12 @@ vp_correct = [(v.strip(), p.strip()) for v,p in zip(df_vp['journal'],df_vp['publ
 df_articles = df_articles[df_articles.set_index(["venue_name", "publisher_name"]).index.isin(vp_correct)]
 
 df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
+# df_articles.to_excel('data/js_seville_articles_opencitations.xlsx', index=False)
                 
 #%% opencitations citations of the article
 
 df_articles = pd.read_excel('data/literary_journal_articles_opencitations.xlsx')
+# df_articles = pd.read_excel('data/js_seville_articles_opencitations.xlsx')
 df_articles['volume'] = (
     df_articles['volume']
     .astype(str)
@@ -277,6 +285,28 @@ article_omids = [[el.replace('omid:', '') for el in e.split(' ') if 'omid:' in e
 df_articles['article_omid'] = article_omids
 
 article_omids_set = set([f'omid:{e}' for e in article_omids])
+
+#opencitations index unzipping
+
+# outer_zip_path = Path("data/OpenCitations/Index_09.04.2026.zip")
+# level1_dir = Path("data/OpenCitations/Index_09.04.2026")
+# level2_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
+
+# # krok 1
+# level1_dir.mkdir(parents=True, exist_ok=True)
+# with zipfile.ZipFile(outer_zip_path, "r") as z:
+#     z.extractall(level1_dir)
+
+# # krok 2
+# level2_dir.mkdir(parents=True, exist_ok=True)
+# zip_files = list(level1_dir.glob("*.zip"))
+
+# for zip_path in tqdm(zip_files):
+#     extract_subdir = level2_dir / zip_path.stem
+#     extract_subdir.mkdir(exist_ok=True)
+
+#     with zipfile.ZipFile(zip_path, "r") as z:
+#         z.extractall(extract_subdir)
 
 base_dir = Path("data/OpenCitations/Index_09.04.2026_unzipped")
 csv_files = list(base_dir.rglob("*.csv"))
@@ -336,14 +366,16 @@ df_articles['venue_internal_id'] = df_articles['venue_omid'].apply(lambda x: omi
 article_omids = [[el.replace('omid:', '') for el in e.split(' ') if 'omid:' in el][0] for e in df_citations['cited'].to_list()]
 
 df_citations['article_omid'] = article_omids
-# df_citations.to_excel('data/citations_of_jjs.xlsx', index=False)
+
 df_citations.to_excel('data/citations_of_literary_journal_articles_opencitations.xlsx', index=False)
+# df_citations.to_excel('data/citations_of_js_seville_articles_opencitations.xlsx', index=False)
 
 citations_counted = dict(Counter(df_citations['article_omid'].to_list()))
 
 df_articles['citedby_count'] = df_articles['article_omid'].apply(lambda x: citations_counted.get(x))
 
 df_articles.to_excel('data/literary_journal_articles_opencitations.xlsx', index=False)
+# df_articles.to_excel('data/js_seville_articles_opencitations.xlsx', index=False)
 
 #articles counted and citations counted -- venue level
 
@@ -364,7 +396,7 @@ df['oc_citations_counted'] = df['internal_id'].apply(lambda x: venue_citations.g
 df['oc_citation_article_ratio'] = df[['oc_citations_counted', 'oc_articles_counted']].apply(lambda x: x['oc_citations_counted']/x['oc_articles_counted'], axis=1)
 
 df.to_excel('data/literary_journals_opencitations.xlsx', index=False)
-
+# df.to_excel('data/js_seville_opencitations.xlsx', index=False)
 
 
 
