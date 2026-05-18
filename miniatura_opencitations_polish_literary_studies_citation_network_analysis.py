@@ -12,8 +12,9 @@ import regex as re
 # =========================
 
 file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
-# file_path = "data/citations_of_jjs.xlsx"
+# file_path = "data/citations_of_js_seville_articles_opencitations_full.xlsx"
 df = pd.read_excel(file_path)
+# df = df.loc[df['Top 10'] == 1]
 
 df = df[["citing", "cited"]].dropna().drop_duplicates()
 
@@ -130,38 +131,44 @@ Sigma.write_html(
 
 #%% Sigma -- author level
 file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
-# file_path = "data/citations_of_jjs.xlsx"
+# file_path = "data/citations_of_js_seville_articles_opencitations_full.xlsx"
 df = pd.read_excel(file_path)
+# df = df.loc[df['Top 10'] == 1]
 
 # omids = [e.replace('omid:', '') for e in df['citing'].to_list() + df['cited'].to_list()]
-omids_set = set(df['citing'].to_list() + df['cited'].to_list())
+# omids_set = set(df['citing'].to_list() + df['cited'].to_list())
 
-tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
+# tar_path = r"data\OpenCitations\Meta_08.04.2026.tar"
 
-filtered_parts = []
-# omids_set = set(["br/06203148478"])
+# filtered_parts = []
+# # omids_set = set(["br/06203148478"])
 
-with tarfile.open(tar_path, "r") as tar:
-    for member in tqdm(tar.getmembers()):
-        if not (member.isfile() and member.name.startswith("output_csv_2026_01_14/") and member.name.endswith(".csv")):
-            continue
+# with tarfile.open(tar_path, "r") as tar:
+#     for member in tqdm(tar.getmembers()):
+#         if not (member.isfile() and member.name.startswith("output_csv_2026_01_14/") and member.name.endswith(".csv")):
+#             continue
 
-        f = tar.extractfile(member)
-        if f is None:
-            continue
+#         f = tar.extractfile(member)
+#         if f is None:
+#             continue
 
-        df_iter = pd.read_csv(f)
-        df_iter["article_omid"] = (
-            df_iter["id"]
-            .astype("string")
-            .str.extract(r"(omid:br/\d+)", expand=False)
-        )
-        df_filtered = df_iter[df_iter["article_omid"].isin(omids_set)]
+#         df_iter = pd.read_csv(f)
+#         df_iter["article_omid"] = (
+#             df_iter["id"]
+#             .astype("string")
+#             .str.extract(r"(omid:br/\d+)", expand=False)
+#         )
+#         df_filtered = df_iter[df_iter["article_omid"].isin(omids_set)]
 
-        if not df_filtered.empty:
-            filtered_parts.append(df_filtered)
+#         if not df_filtered.empty:
+#             filtered_parts.append(df_filtered)
   
-df_articles = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+# df_articles = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+
+
+# df_articles.to_excel('data/all_articles_for_graph_js_seville.xlsx', index=False)
+df_articles = pd.read_excel('data/all_articles_for_graph_js_seville_full.xlsx')
+df_articles = df_articles.loc[df_articles['Top 10'] == 1]
 
 omid_pattern = r'omid:ra/\d+'
 df_articles["omid_author"] = (
@@ -169,6 +176,7 @@ df_articles["omid_author"] = (
         .fillna("")
         .apply(lambda x: re.findall(omid_pattern, x))
 )
+
 omid_dict = dict(zip(df_articles['article_omid'], df_articles['omid_author']))
 df['citing'] = df['citing'].apply(lambda x: omid_dict.get(x))
 df['cited'] = df['cited'].apply(lambda x: omid_dict.get(x))
@@ -284,8 +292,9 @@ Sigma.write_html(
 )
 #%% Sigma -- venue level
 file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
-# file_path = "data/citations_of_jjs.xlsx"
+# file_path = "data/citations_of_js_seville_articles_opencitations_full.xlsx"
 df = pd.read_excel(file_path)
+# df = df.loc[df['Top 10'] == 1]
 
 omid_pattern = r'omid:br/\d+'
 df_articles["omid_venue"] = (
