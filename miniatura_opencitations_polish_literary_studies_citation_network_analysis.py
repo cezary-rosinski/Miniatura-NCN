@@ -133,7 +133,7 @@ Sigma.write_html(
 file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
 # file_path = "data/citations_of_js_seville_articles_opencitations_full.xlsx"
 df = pd.read_excel(file_path)
-# df = df.loc[df['Top 10'] == 1]
+# df = df.loc[df['Top 10'] == 1] -- testy
 
 # omids = [e.replace('omid:', '') for e in df['citing'].to_list() + df['cited'].to_list()]
 # omids_set = set(df['citing'].to_list() + df['cited'].to_list())
@@ -164,11 +164,12 @@ df = pd.read_excel(file_path)
 #             filtered_parts.append(df_filtered)
   
 # df_articles = pd.concat(filtered_parts, ignore_index=True) if filtered_parts else pd.DataFrame()
+# df_articles.to_excel('data/all_articles_for_graph.xlsx', index=False)
 
 
-# df_articles.to_excel('data/all_articles_for_graph_js_seville.xlsx', index=False)
-df_articles = pd.read_excel('data/all_articles_for_graph_js_seville_full.xlsx')
-df_articles = df_articles.loc[df_articles['Top 10'] == 1]
+df_articles = pd.read_excel('data/all_articles_for_graph.xlsx')
+# df_articles = pd.read_excel('data/all_articles_for_graph_js_seville_full.xlsx')
+# df_articles = df_articles.loc[df_articles['Top 10'] == 1]
 
 omid_pattern = r'omid:ra/\d+'
 df_articles["omid_author"] = (
