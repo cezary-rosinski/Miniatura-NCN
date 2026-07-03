@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 #%% Analysis
-file_path = r"data/literary_journal_articles_opencitations_final.xlsx"
+file_path = r"data/literary_journal_articles_opencitations.xlsx"
 df = pd.read_excel(file_path)
 articles = df[["article_omid", "venue_name", "citedby_count"]].drop_duplicates().copy()
 articles["citedby_count"] = articles["citedby_count"].fillna(0)
