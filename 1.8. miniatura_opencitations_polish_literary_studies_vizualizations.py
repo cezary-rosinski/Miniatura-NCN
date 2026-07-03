@@ -4,7 +4,7 @@ import json
 
 #%%
 # === 1. Wczytanie danych ===
-file_path = r"data/literary_journal_articles_opencitations_final.xlsx"
+file_path = r"data/literary_journal_articles_opencitations.xlsx"
 df = pd.read_excel(file_path)
 
 # === 2. Przygotowanie danych ===

@@ -9,7 +9,7 @@ from rapidfuzz import fuzz, process
 # PATHS
 # =========================================================
 
-oc_path = r"data/literary_journal_articles_opencitations_final.xlsx"
+oc_path = r"data/literary_journal_articles_opencitations.xlsx"
 sc_path = r"data/articles_of_literary_journals_scopus.xlsx"
 manual_review_path = r"data/oc_scopus_fuzzy_manual_review.xlsx"
 
