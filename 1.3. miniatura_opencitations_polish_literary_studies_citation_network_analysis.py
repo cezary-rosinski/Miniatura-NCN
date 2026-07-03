@@ -135,6 +135,7 @@ file_path = "data/citations_of_literary_journal_articles_opencitations.xlsx"
 df = pd.read_excel(file_path)
 # df = df.loc[df['Top 10'] == 1] -- testy
 
+#uruchomić cały blok, jeli nie ma 'all_articles_for_graph.xlsx'
 # omids = [e.replace('omid:', '') for e in df['citing'].to_list() + df['cited'].to_list()]
 # omids_set = set(df['citing'].to_list() + df['cited'].to_list())
 

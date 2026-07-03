@@ -334,7 +334,1439 @@ plt.tight_layout()
 plt.show()
 
 
+#%%
 
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+
+from pathlib import Path
+from html import escape
+from string import Template
+
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
+ARTICLE_PATH = Path("data/articles_of_literary_journals_scopus.xlsx")
+METRICS_PATH = Path("data/literary_journal_articles_scopus_metrics.xlsx")
+
+OUT_DIR = Path("data/figures")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+OUTPUT_HTML = OUT_DIR / "05_citation_regime_map_scopus_interactive_explained_search.html"
+OUTPUT_METRICS = Path("data/literary_journal_articles_scopus_metrics_with_regimes.xlsx")
+OUTPUT_DISTRIBUTIONS = Path("data/literary_journal_articles_scopus_citation_distributions.xlsx")
+
+ARTICLE_ID_COLUMN = "eid"
+VENUE_COLUMN = "publication_name"
+VENUE_INTERNAL_ID_COLUMN = "venue_internal_id"
+CITATION_COLUMN = "citedby_count"
+
+BUBBLE_SIZE_COLUMN = "total_citations"
+MIN_ARTICLES = 0
+
+
+# =========================================================
+# METRIC FUNCTIONS
+# =========================================================
+
+def gini_coefficient(x):
+    x = np.asarray(x, dtype=float)
+
+    if len(x) == 0:
+        return np.nan
+
+    if np.any(x < 0):
+        raise ValueError("Gini coefficient is not defined for negative values.")
+
+    if np.all(x == 0):
+        return 0.0
+
+    x_sorted = np.sort(x)
+    n = len(x_sorted)
+    index = np.arange(1, n + 1)
+
+    return (2 * np.sum(index * x_sorted)) / (n * np.sum(x_sorted)) - (n + 1) / n
+
+
+def theil_index(x):
+    x = np.asarray(x, dtype=float)
+
+    if len(x) == 0:
+        return np.nan
+
+    if np.any(x < 0):
+        raise ValueError("Theil index is not defined for negative values.")
+
+    mean_x = np.mean(x)
+
+    if mean_x == 0:
+        return 0.0
+
+    ratios = x / mean_x
+    ratios = ratios[ratios > 0]
+
+    return np.mean(ratios * np.log(ratios))
+
+
+def top_10_citation_share(x):
+    x = np.asarray(x, dtype=float)
+
+    if len(x) == 0:
+        return np.nan
+
+    total_citations = x.sum()
+
+    if total_citations == 0:
+        return 0.0
+
+    n_top = max(1, int(np.ceil(len(x) * 0.10)))
+    x_sorted_desc = np.sort(x)[::-1]
+
+    return x_sorted_desc[:n_top].sum() / total_citations
+
+
+def first_non_empty(series):
+    values = series.dropna().astype(str).str.strip()
+    values = values[values != ""]
+    return values.iloc[0] if len(values) > 0 else np.nan
+
+
+# =========================================================
+# DATA LOADING
+# =========================================================
+
+def load_articles(article_path):
+    if not article_path.exists():
+        raise FileNotFoundError(f"Input article file not found: {article_path}")
+
+    raw = pd.read_excel(article_path)
+
+    required_cols = [
+        ARTICLE_ID_COLUMN,
+        VENUE_COLUMN,
+        CITATION_COLUMN,
+    ]
+
+    missing = [col for col in required_cols if col not in raw.columns]
+
+    if missing:
+        raise ValueError(f"Missing required columns in article file: {missing}")
+
+    use_cols = required_cols.copy()
+
+    has_internal_id = VENUE_INTERNAL_ID_COLUMN in raw.columns
+
+    if has_internal_id:
+        use_cols.append(VENUE_INTERNAL_ID_COLUMN)
+
+    articles = raw[use_cols].copy()
+
+    articles = articles.dropna(subset=[ARTICLE_ID_COLUMN, VENUE_COLUMN])
+
+    articles[ARTICLE_ID_COLUMN] = articles[ARTICLE_ID_COLUMN].astype(str).str.strip()
+    articles[VENUE_COLUMN] = articles[VENUE_COLUMN].astype(str).str.strip()
+
+    articles = articles[
+        (articles[ARTICLE_ID_COLUMN] != "") &
+        (articles[VENUE_COLUMN] != "")
+    ].copy()
+
+    articles[CITATION_COLUMN] = (
+        pd.to_numeric(articles[CITATION_COLUMN], errors="coerce")
+        .fillna(0)
+        .clip(lower=0)
+    )
+
+    if has_internal_id:
+        grouped = (
+            articles
+            .groupby([ARTICLE_ID_COLUMN, VENUE_COLUMN], as_index=False)
+            .agg(
+                citedby_count=(CITATION_COLUMN, "max"),
+                venue_internal_id=(VENUE_INTERNAL_ID_COLUMN, first_non_empty),
+            )
+        )
+    else:
+        grouped = (
+            articles
+            .groupby([ARTICLE_ID_COLUMN, VENUE_COLUMN], as_index=False)
+            .agg(
+                citedby_count=(CITATION_COLUMN, "max"),
+            )
+        )
+
+        grouped["venue_internal_id"] = np.nan
+
+    grouped = grouped.rename(columns={
+        ARTICLE_ID_COLUMN: "article_id",
+        VENUE_COLUMN: "venue_name",
+    })
+
+    return grouped
+
+
+# =========================================================
+# METRIC COMPUTATION
+# =========================================================
+
+def compute_journal_metrics(articles):
+    rows = []
+
+    for venue, group in articles.groupby("venue_name", sort=True):
+        citations = group["citedby_count"].astype(float).to_numpy()
+
+        n_articles = len(citations)
+        total_citations = citations.sum()
+
+        mean_citations = citations.mean()
+        median_citations = np.median(citations)
+
+        std_citations = np.std(citations, ddof=1) if n_articles > 1 else 0.0
+
+        if mean_citations == 0:
+            cv = 0.0 if std_citations == 0 else np.nan
+        else:
+            cv = std_citations / mean_citations
+
+        venue_internal_id = first_non_empty(group["venue_internal_id"])
+
+        rows.append({
+            "venue_name": venue,
+            "venue_internal_id": venue_internal_id,
+            "n_articles": n_articles,
+            "total_citations": total_citations,
+            "mean_citations": mean_citations,
+            "median_citations": median_citations,
+            "mean_median_gap": mean_citations - median_citations,
+            "share_uncited": np.mean(citations == 0),
+            "share_ge_1": np.mean(citations >= 1),
+            "share_ge_2": np.mean(citations >= 2),
+            "share_ge_5": np.mean(citations >= 5),
+            "share_ge_10": np.mean(citations >= 10),
+            "p95_citations": np.quantile(citations, 0.95),
+            "p99_citations": np.quantile(citations, 0.99),
+            "std_citations": std_citations,
+            "cv_citations": cv,
+            "gini_citations": gini_coefficient(citations),
+            "theil_citations": theil_index(citations),
+            "top_10pct_citation_share": top_10_citation_share(citations),
+        })
+
+    metrics = pd.DataFrame(rows)
+
+    metrics = metrics.sort_values(
+        ["mean_citations", "median_citations"],
+        ascending=False
+    ).reset_index(drop=True)
+
+    return metrics
+
+
+def compute_citation_distributions(articles):
+    rows = []
+
+    for venue, group in articles.groupby("venue_name", sort=True):
+        dist = (
+            group
+            .groupby("citedby_count")["article_id"]
+            .nunique()
+            .reset_index(name="article_count")
+            .sort_values("citedby_count")
+        )
+
+        dist["venue_name"] = venue
+        rows.append(dist)
+
+    if not rows:
+        return pd.DataFrame(columns=["citedby_count", "article_count", "venue_name"])
+
+    return pd.concat(rows, ignore_index=True)
+
+
+def get_or_compute_metrics(metrics_path, article_path):
+    required_metrics = [
+        "venue_name",
+        "n_articles",
+        "total_citations",
+        "mean_citations",
+        "median_citations",
+        "share_uncited",
+        "top_10pct_citation_share",
+        "p95_citations",
+        "gini_citations",
+    ]
+
+    if metrics_path.exists():
+        metrics = pd.read_excel(metrics_path)
+
+        missing = [col for col in required_metrics if col not in metrics.columns]
+
+        if not missing:
+            return metrics
+
+        print(
+            "Existing metrics file is missing required columns. "
+            "Recomputing metrics from the article-level Scopus file."
+        )
+
+    articles = load_articles(article_path)
+
+    metrics = compute_journal_metrics(articles)
+    metrics.to_excel(metrics_path, index=False)
+
+    distributions = compute_citation_distributions(articles)
+    distributions.to_excel(OUTPUT_DISTRIBUTIONS, index=False)
+
+    return metrics
+
+
+# =========================================================
+# REGIME CLASSIFICATION
+# =========================================================
+
+def classify_citation_regimes(metrics):
+    metrics = metrics.copy()
+
+    numeric_cols = [
+        "n_articles",
+        "total_citations",
+        "mean_citations",
+        "median_citations",
+        "share_uncited",
+        "top_10pct_citation_share",
+        "p95_citations",
+        "gini_citations",
+    ]
+
+    for col in numeric_cols:
+        metrics[col] = pd.to_numeric(metrics[col], errors="coerce")
+
+    metrics = metrics.dropna(
+        subset=["share_uncited", "top_10pct_citation_share"]
+    ).copy()
+
+    metrics["share_uncited"] = metrics["share_uncited"].clip(0, 1)
+    metrics["top_10pct_citation_share"] = metrics["top_10pct_citation_share"].clip(0, 1)
+
+    x_median = metrics["share_uncited"].median()
+    y_median = metrics["top_10pct_citation_share"].median()
+
+    def classify(row):
+        lower_uncitedness = row["share_uncited"] <= x_median
+        lower_concentration = row["top_10pct_citation_share"] <= y_median
+
+        if lower_uncitedness and lower_concentration:
+            return "Broader reception"
+
+        if lower_uncitedness and not lower_concentration:
+            return "Concentrated reception"
+
+        if not lower_uncitedness and not lower_concentration:
+            return "Island-like reception"
+
+        return "Low reception"
+
+    metrics["citation_regime"] = metrics.apply(classify, axis=1)
+
+    regime_definitions = {
+        "Broader reception": (
+            "A comparatively larger share of articles receives citations, "
+            "and citations are not strongly dominated by the top 10% of articles."
+        ),
+        "Concentrated reception": (
+            "A comparatively larger share of articles receives citations, "
+            "but a small group of highly cited articles generates a disproportionate share of all citations."
+        ),
+        "Island-like reception": (
+            "Many articles remain uncited, while most citations are generated by a small set of citation islands."
+        ),
+        "Low reception": (
+            "Many articles remain uncited, and there is no strongly dominant group of highly cited articles. "
+            "In zero- or very low-citation journals, low concentration does not mean broad reception."
+        ),
+    }
+
+    regime_rules = {
+        "Broader reception": (
+            f"Uncitedness ≤ sample median ({x_median:.1%}) and "
+            f"top-10% citation share ≤ sample median ({y_median:.1%})."
+        ),
+        "Concentrated reception": (
+            f"Uncitedness ≤ sample median ({x_median:.1%}) and "
+            f"top-10% citation share > sample median ({y_median:.1%})."
+        ),
+        "Island-like reception": (
+            f"Uncitedness > sample median ({x_median:.1%}) and "
+            f"top-10% citation share > sample median ({y_median:.1%})."
+        ),
+        "Low reception": (
+            f"Uncitedness > sample median ({x_median:.1%}) and "
+            f"top-10% citation share ≤ sample median ({y_median:.1%})."
+        ),
+    }
+
+    metrics["regime_definition"] = metrics["citation_regime"].map(regime_definitions)
+    metrics["regime_rule"] = metrics["citation_regime"].map(regime_rules)
+
+    return metrics, x_median, y_median, regime_definitions, regime_rules
+
+
+# =========================================================
+# VISUAL DESIGN
+# =========================================================
+
+REGIME_ORDER = [
+    "Broader reception",
+    "Concentrated reception",
+    "Island-like reception",
+    "Low reception",
+]
+
+REGIME_COLORS = {
+    "Broader reception": "#5B7CFA",
+    "Concentrated reception": "#F28E72",
+    "Island-like reception": "#39C99A",
+    "Low reception": "#B985F4",
+}
+
+
+def scale_marker_size(values, min_size=8, max_size=42):
+    values = pd.to_numeric(values, errors="coerce").fillna(0).clip(lower=0)
+    transformed = np.sqrt(values)
+
+    lo = transformed.quantile(0.02)
+    hi = transformed.quantile(0.98)
+
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.full(len(values), (min_size + max_size) / 2)
+
+    transformed = transformed.clip(lower=lo, upper=hi)
+
+    return min_size + (transformed - lo) / (hi - lo) * (max_size - min_size)
+
+
+def make_summary_table(metrics):
+    summary = (
+        metrics
+        .groupby("citation_regime", observed=False)
+        .agg(
+            Journals=("venue_name", "count"),
+            Median_uncitedness=("share_uncited", "median"),
+            Median_top10_share=("top_10pct_citation_share", "median"),
+            Median_articles=("n_articles", "median"),
+            Median_total_citations=("total_citations", "median"),
+        )
+        .reindex(REGIME_ORDER)
+        .reset_index()
+        .rename(columns={
+            "citation_regime": "Citation regime",
+            "Median_uncitedness": "Median uncitedness",
+            "Median_top10_share": "Median top-10% citation share",
+            "Median_articles": "Median articles",
+            "Median_total_citations": "Median total citations",
+        })
+    )
+
+    def fmt_pct(x):
+        return "" if pd.isna(x) else f"{x:.1%}"
+
+    def fmt_num(x):
+        return "" if pd.isna(x) else f"{x:.0f}"
+
+    summary["Median uncitedness"] = summary["Median uncitedness"].map(fmt_pct)
+    summary["Median top-10% citation share"] = summary["Median top-10% citation share"].map(fmt_pct)
+    summary["Median articles"] = summary["Median articles"].map(fmt_num)
+    summary["Median total citations"] = summary["Median total citations"].map(fmt_num)
+
+    return summary
+
+
+def build_regime_figure(metrics, x_median, y_median):
+    metrics = metrics.copy()
+
+    metrics["marker_size"] = scale_marker_size(metrics[BUBBLE_SIZE_COLUMN])
+
+    fig = go.Figure()
+
+    quadrant_shapes = [
+        ("Broader reception", 0, x_median, 0, y_median),
+        ("Concentrated reception", 0, x_median, y_median, 1),
+        ("Island-like reception", x_median, 1, y_median, 1),
+        ("Low reception", x_median, 1, 0, y_median),
+    ]
+
+    for regime, x0, x1, y0, y1 in quadrant_shapes:
+        fig.add_shape(
+            type="rect",
+            xref="x",
+            yref="y",
+            x0=x0,
+            x1=x1,
+            y0=y0,
+            y1=y1,
+            fillcolor=REGIME_COLORS[regime],
+            opacity=0.055,
+            line_width=0,
+            layer="below",
+        )
+
+    for regime in REGIME_ORDER:
+        sub = metrics[metrics["citation_regime"] == regime].copy()
+
+        if sub.empty:
+            continue
+
+        custom_data = sub[[
+            "venue_name",
+            "citation_regime",
+            "regime_definition",
+            "regime_rule",
+            "share_uncited",
+            "top_10pct_citation_share",
+            "n_articles",
+            "total_citations",
+            "mean_citations",
+            "median_citations",
+            "p95_citations",
+            "gini_citations",
+        ]].to_numpy()
+
+        fig.add_trace(
+            go.Scatter(
+                x=sub["share_uncited"],
+                y=sub["top_10pct_citation_share"],
+                mode="markers",
+                name=regime,
+                customdata=custom_data,
+                marker=dict(
+                    size=sub["marker_size"],
+                    color=REGIME_COLORS[regime],
+                    opacity=0.82,
+                    line=dict(color="white", width=0.9),
+                ),
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br><br>"
+                    "<b>Regime:</b> %{customdata[1]}<br>"
+                    "<b>Rule:</b> %{customdata[3]}<br><br>"
+                    "<b>Interpretation:</b><br>%{customdata[2]}<br><br>"
+                    "<b>Uncited articles:</b> %{customdata[4]:.1%}<br>"
+                    "<b>Top-10% citation share:</b> %{customdata[5]:.1%}<br>"
+                    "<b>Articles:</b> %{customdata[6]:,.0f}<br>"
+                    "<b>Total citations:</b> %{customdata[7]:,.0f}<br>"
+                    "<b>Mean citations:</b> %{customdata[8]:.2f}<br>"
+                    "<b>Median citations:</b> %{customdata[9]:.2f}<br>"
+                    "<b>95th percentile:</b> %{customdata[10]:.2f}<br>"
+                    "<b>Gini:</b> %{customdata[11]:.2f}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.add_vline(
+        x=x_median,
+        line_width=1.2,
+        line_dash="dash",
+        line_color="#555555",
+        annotation_text=f"Median uncitedness: {x_median:.1%}",
+        annotation_position="bottom right",
+        annotation_font_size=11,
+    )
+
+    fig.add_hline(
+        y=y_median,
+        line_width=1.2,
+        line_dash="dash",
+        line_color="#555555",
+        annotation_text=f"Median top-10% share: {y_median:.1%}",
+        annotation_position="top left",
+        annotation_font_size=11,
+    )
+
+    annotations = [
+        {
+            "regime": "Broader reception",
+            "x": max(0.03, x_median * 0.48),
+            "y": max(0.06, y_median * 0.35),
+            "text": (
+                "Broader reception<br>"
+                "<span style='font-size:11px'>lower uncitedness<br>lower citation concentration</span>"
+            ),
+        },
+        {
+            "regime": "Concentrated reception",
+            "x": max(0.03, x_median * 0.48),
+            "y": y_median + (1 - y_median) * 0.78,
+            "text": (
+                "Concentrated reception<br>"
+                "<span style='font-size:11px'>lower uncitedness<br>higher citation concentration</span>"
+            ),
+        },
+        {
+            "regime": "Island-like reception",
+            "x": x_median + (1 - x_median) * 0.58,
+            "y": y_median + (1 - y_median) * 0.78,
+            "text": (
+                "Island-like reception<br>"
+                "<span style='font-size:11px'>higher uncitedness<br>higher citation concentration</span>"
+            ),
+        },
+        {
+            "regime": "Low reception",
+            "x": x_median + (1 - x_median) * 0.58,
+            "y": max(0.06, y_median * 0.35),
+            "text": (
+                "Low reception<br>"
+                "<span style='font-size:11px'>higher uncitedness<br>lower citation concentration</span>"
+            ),
+        },
+    ]
+
+    for item in annotations:
+        fig.add_annotation(
+            x=item["x"],
+            y=item["y"],
+            text=f"<b>{item['text']}</b>",
+            showarrow=False,
+            align="center",
+            bgcolor="rgba(255,255,255,0.78)",
+            bordercolor=REGIME_COLORS[item["regime"]],
+            borderwidth=1,
+            borderpad=5,
+            font=dict(size=12, color="#1F2937"),
+        )
+
+    size_label = (
+        "total citations"
+        if BUBBLE_SIZE_COLUMN == "total_citations"
+        else "number of articles"
+    )
+
+    fig.update_layout(
+        template="plotly_white",
+        width=1220,
+        height=820,
+        title=dict(
+            text=(
+                "Citation regimes of journals in Scopus"
+                "<br><sup>"
+                "X = share of uncited articles; "
+                "Y = share of citations generated by the top 10% of articles; "
+                f"bubble size ≈ {size_label}"
+                "</sup>"
+            ),
+            x=0.02,
+            xanchor="left",
+        ),
+        xaxis=dict(
+            title="Share of uncited articles",
+            tickformat=".0%",
+            range=[-0.03, 1.03],
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="Share of citations generated by the top 10% of articles",
+            tickformat=".0%",
+            range=[-0.03, 1.05],
+            zeroline=False,
+        ),
+        legend=dict(
+            title="Citation regime",
+            orientation="v",
+            x=1.02,
+            y=1,
+            xanchor="left",
+            yanchor="top",
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="rgba(0,0,0,0.12)",
+            borderwidth=1,
+        ),
+        margin=dict(l=80, r=250, t=110, b=80),
+        hoverlabel=dict(
+            bgcolor="white",
+            font_size=12,
+            font_family="Arial",
+        ),
+    )
+
+    return fig
+
+
+# =========================================================
+# HTML HELPERS
+# =========================================================
+
+def build_definition_cards(regime_definitions, regime_rules):
+    cards = []
+
+    for regime in REGIME_ORDER:
+        color = REGIME_COLORS[regime]
+        definition = escape(regime_definitions[regime])
+        rule = escape(regime_rules[regime])
+
+        cards.append(f"""
+        <div class="regime-card" style="border-left: 6px solid {color};">
+            <div class="regime-title">
+                <span class="dot" style="background:{color};"></span>
+                {escape(regime)}
+            </div>
+            <p><strong>Rule:</strong> {rule}</p>
+            <p><strong>Meaning:</strong> {definition}</p>
+        </div>
+        """)
+
+    return "\n".join(cards)
+
+
+def build_journal_options(metrics):
+    journals = (
+        metrics["venue_name"]
+        .dropna()
+        .astype(str)
+        .sort_values()
+        .unique()
+    )
+
+    return "\n".join(
+        f'<option value="{escape(journal)}"></option>'
+        for journal in journals
+    )
+
+
+def write_html(fig, metrics, x_median, y_median, regime_definitions, regime_rules, output_path):
+    fig_html = fig.to_html(
+        full_html=False,
+        include_plotlyjs=True,
+        config={
+            "displaylogo": False,
+            "responsive": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": "citation_regime_map_scopus",
+                "height": 820,
+                "width": 1220,
+                "scale": 3,
+            },
+        },
+    )
+
+    cards_html = build_definition_cards(regime_definitions, regime_rules)
+    journal_options_html = build_journal_options(metrics)
+
+    summary = make_summary_table(metrics)
+    summary_html = summary.to_html(index=False, classes="summary-table", escape=False)
+
+    html_template = Template(r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Citation regimes of journals in Scopus</title>
+
+<style>
+    body {
+        font-family: Arial, Helvetica, sans-serif;
+        margin: 0;
+        padding: 28px 34px 48px 34px;
+        color: #111827;
+        background: #ffffff;
+    }
+
+    h1 {
+        font-size: 26px;
+        line-height: 1.25;
+        margin: 0 0 8px 0;
+        font-weight: 700;
+    }
+
+    h2 {
+        font-size: 20px;
+        margin-top: 34px;
+        margin-bottom: 12px;
+    }
+
+    .subtitle {
+        font-size: 14px;
+        color: #4B5563;
+        max-width: 1120px;
+        line-height: 1.55;
+        margin-bottom: 18px;
+    }
+
+    .method-note {
+        background: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+        padding: 14px 16px;
+        max-width: 1120px;
+        line-height: 1.55;
+        font-size: 14px;
+        margin-bottom: 24px;
+    }
+
+    .regime-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(320px, 1fr));
+        gap: 14px;
+        max-width: 1120px;
+        margin-bottom: 24px;
+    }
+
+    .regime-card {
+        background: #FFFFFF;
+        border-top: 1px solid #E5E7EB;
+        border-right: 1px solid #E5E7EB;
+        border-bottom: 1px solid #E5E7EB;
+        border-radius: 10px;
+        padding: 14px 16px 12px 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+
+    .regime-title {
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        display: inline-block;
+    }
+
+    .regime-card p {
+        margin: 7px 0;
+        font-size: 13.5px;
+        line-height: 1.45;
+        color: #374151;
+    }
+
+    .search-panel {
+        max-width: 1120px;
+        margin: 8px 0 24px 0;
+        padding: 16px 18px;
+        background: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+    }
+
+    .search-panel-title {
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+
+    .search-panel-description {
+        font-size: 13.5px;
+        color: #4B5563;
+        line-height: 1.45;
+        margin-bottom: 12px;
+    }
+
+    .search-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+
+    #journal-search {
+        min-width: 520px;
+        max-width: 760px;
+        flex: 1;
+        font-size: 14px;
+        padding: 9px 11px;
+        border: 1px solid #D1D5DB;
+        border-radius: 8px;
+        background: #FFFFFF;
+    }
+
+    #journal-clear {
+        font-size: 14px;
+        padding: 9px 13px;
+        border: 1px solid #D1D5DB;
+        border-radius: 8px;
+        background: #FFFFFF;
+        cursor: pointer;
+    }
+
+    #journal-clear:hover {
+        background: #F3F4F6;
+    }
+
+    #journal-selection-note {
+        margin-top: 12px;
+        font-size: 13.5px;
+        line-height: 1.45;
+        color: #374151;
+    }
+
+    #journal-selection-note strong {
+        color: #111827;
+    }
+
+    .chart-wrapper {
+        max-width: 1450px;
+        margin-top: 12px;
+    }
+
+    .summary-table {
+        border-collapse: collapse;
+        font-size: 13.5px;
+        min-width: 900px;
+        margin-top: 10px;
+    }
+
+    .summary-table th {
+        background: #F3F4F6;
+        border: 1px solid #D1D5DB;
+        padding: 8px 10px;
+        text-align: left;
+    }
+
+    .summary-table td {
+        border: 1px solid #D1D5DB;
+        padding: 8px 10px;
+    }
+
+    .footer-note {
+        max-width: 1120px;
+        margin-top: 18px;
+        color: #4B5563;
+        font-size: 13px;
+        line-height: 1.5;
+    }
+</style>
+</head>
+
+<body>
+
+<h1>Citation regimes of journals in Scopus</h1>
+
+<div class="subtitle">
+This visualization classifies journals by two distributional properties:
+the share of uncited articles and the share of all citations generated by the top 10% most cited articles.
+The categories are relative to this Scopus dataset; they are not universal journal types.
+</div>
+
+<div class="method-note">
+<strong>How to read the regimes.</strong>
+The vertical dashed line marks the sample median of uncitedness:
+<strong>$x_median_pct</strong>.
+The horizontal dashed line marks the sample median of citation concentration:
+<strong>$y_median_pct</strong>.
+A journal is assigned to one of four regimes depending on whether it falls below or above these two medians.
+</div>
+
+<div class="regime-grid">
+$cards_html
+</div>
+
+<div class="search-panel">
+    <div class="search-panel-title">Find and highlight a journal</div>
+    <div class="search-panel-description">
+        Start typing a journal title and select it from the list. The selected journal will be highlighted directly on the citation regime map.
+        Other points remain visible as context, but are dimmed. Press Enter to highlight the best matching title.
+        Use “Clear selection” or press Escape to remove the highlight.
+    </div>
+
+    <div class="search-row">
+        <input
+            id="journal-search"
+            list="journal-options"
+            placeholder="Start typing a journal title..."
+            autocomplete="off"
+        >
+        <datalist id="journal-options">
+            $journal_options_html
+        </datalist>
+
+        <button id="journal-clear" type="button">Clear selection</button>
+    </div>
+
+    <div id="journal-selection-note">
+        No journal selected.
+    </div>
+</div>
+
+<div class="chart-wrapper">
+$fig_html
+</div>
+
+<script>
+(function () {
+    const SELECTED_TRACE_NAME = "Selected journal";
+    const input = document.getElementById("journal-search");
+    const clearButton = document.getElementById("journal-clear");
+    const note = document.getElementById("journal-selection-note");
+
+    const DIMMED_OPACITY = 0.12;
+    const ACTIVE_OPACITY = 1.0;
+
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "")
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .trim();
+    }
+
+    function formatPercent(value) {
+        const number = Number(value);
+
+        if (!Number.isFinite(number)) {
+            return "0.0%";
+        }
+
+        return (number * 100).toFixed(1) + "%";
+    }
+
+    function formatNumber(value, digits = 2) {
+        const number = Number(value);
+
+        if (!Number.isFinite(number)) {
+            return "0.00";
+        }
+
+        return number.toFixed(digits);
+    }
+
+    function getGraphDiv() {
+        return document.querySelector(".plotly-graph-div");
+    }
+
+    function waitForGraph(callback) {
+        const gd = getGraphDiv();
+
+        if (gd && gd.data && gd.data.length > 0 && window.Plotly) {
+            callback(gd);
+            return;
+        }
+
+        setTimeout(function () {
+            waitForGraph(callback);
+        }, 80);
+    }
+
+    function isOriginalDataTrace(trace) {
+        return trace.customdata && trace.name !== SELECTED_TRACE_NAME;
+    }
+
+    function isArrayLike(value) {
+        return Array.isArray(value) || ArrayBuffer.isView(value);
+    }
+
+    function getMarkerSize(trace, pointIndex) {
+        if (!trace.marker || trace.marker.size === undefined) {
+            return 24;
+        }
+
+        if (isArrayLike(trace.marker.size)) {
+            const value = Number(trace.marker.size[pointIndex]);
+            return Number.isFinite(value) ? value : 24;
+        }
+
+        const value = Number(trace.marker.size);
+        return Number.isFinite(value) ? value : 24;
+    }
+
+    function collectPoints(gd) {
+        const points = [];
+
+        gd.data.forEach((trace, traceIndex) => {
+            if (!isOriginalDataTrace(trace)) {
+                return;
+            }
+
+            for (let i = 0; i < trace.customdata.length; i++) {
+                const cd = trace.customdata[i];
+
+                points.push({
+                    journal: cd[0],
+                    regime: cd[1],
+                    definition: cd[2],
+                    rule: cd[3],
+
+                    x: Number(cd[4]),
+                    y: Number(cd[5]),
+
+                    nArticles: cd[6],
+                    totalCitations: cd[7],
+                    meanCitations: cd[8],
+                    medianCitations: cd[9],
+                    p95Citations: cd[10],
+                    gini: cd[11],
+
+                    traceIndex: traceIndex,
+                    pointIndex: i,
+                    baseMarkerSize: getMarkerSize(trace, i)
+                });
+            }
+        });
+
+        return points;
+    }
+
+    function saveOriginalStyles(gd) {
+        if (gd.__journalOriginalStyles) {
+            return;
+        }
+
+        gd.__journalOriginalStyles = {};
+
+        gd.data.forEach((trace, traceIndex) => {
+            if (!isOriginalDataTrace(trace)) {
+                return;
+            }
+
+            gd.__journalOriginalStyles[traceIndex] = {
+                markerOpacity: trace.marker ? trace.marker.opacity : undefined,
+                lineColor: trace.marker && trace.marker.line ? trace.marker.line.color : undefined,
+                lineWidth: trace.marker && trace.marker.line ? trace.marker.line.width : undefined
+            };
+        });
+    }
+
+    function deleteExistingHighlight(gd) {
+        const indices = [];
+
+        gd.data.forEach((trace, index) => {
+            if (trace.name === SELECTED_TRACE_NAME) {
+                indices.push(index);
+            }
+        });
+
+        if (indices.length > 0) {
+            return Plotly.deleteTraces(gd, indices);
+        }
+
+        return Promise.resolve();
+    }
+
+    function restoreOriginalStyles(gd) {
+        if (!gd.__journalOriginalStyles) {
+            return Promise.resolve();
+        }
+
+        const updates = [];
+
+        Object.keys(gd.__journalOriginalStyles).forEach(traceIndexText => {
+            const traceIndex = Number(traceIndexText);
+            const style = gd.__journalOriginalStyles[traceIndex];
+
+            const update = {
+                "marker.opacity": [style.markerOpacity !== undefined ? style.markerOpacity : 0.82],
+                "marker.line.color": [style.lineColor !== undefined ? style.lineColor : "white"],
+                "marker.line.width": [style.lineWidth !== undefined ? style.lineWidth : 0.9]
+            };
+
+            updates.push(Plotly.restyle(gd, update, [traceIndex]));
+        });
+
+        return Promise.all(updates);
+    }
+
+    function resetGraph(gd) {
+        return deleteExistingHighlight(gd)
+            .then(() => restoreOriginalStyles(gd));
+    }
+
+    function dimBackgroundAndActivatePoint(gd, selectedPoint) {
+        saveOriginalStyles(gd);
+
+        const updates = [];
+
+        gd.data.forEach((trace, traceIndex) => {
+            if (!isOriginalDataTrace(trace)) {
+                return;
+            }
+
+            const n = trace.customdata.length;
+            const opacityArray = [];
+            const lineColorArray = [];
+            const lineWidthArray = [];
+
+            for (let i = 0; i < n; i++) {
+                const isSelected =
+                    traceIndex === selectedPoint.traceIndex &&
+                    i === selectedPoint.pointIndex;
+
+                if (isSelected) {
+                    opacityArray.push(ACTIVE_OPACITY);
+                    lineColorArray.push("#111827");
+                    lineWidthArray.push(2.8);
+                } else {
+                    opacityArray.push(DIMMED_OPACITY);
+                    lineColorArray.push("rgba(255,255,255,0.65)");
+                    lineWidthArray.push(0.6);
+                }
+            }
+
+            updates.push(
+                Plotly.restyle(
+                    gd,
+                    {
+                        "marker.opacity": [opacityArray],
+                        "marker.line.color": [lineColorArray],
+                        "marker.line.width": [lineWidthArray]
+                    },
+                    [traceIndex]
+                )
+            );
+        });
+
+        return Promise.all(updates);
+    }
+
+    function addHighlightTrace(gd, point) {
+        const selectedSize = Math.max(34, point.baseMarkerSize + 18);
+
+        const highlightTrace = {
+            type: "scatter",
+            mode: "markers+text",
+            name: SELECTED_TRACE_NAME,
+            showlegend: false,
+            x: [point.x],
+            y: [point.y],
+            text: [point.journal],
+            textposition: "top center",
+            textfont: {
+                size: 13,
+                color: "#111827",
+                family: "Arial, Helvetica, sans-serif"
+            },
+            marker: {
+                size: selectedSize,
+                symbol: "circle-open",
+                color: "#111827",
+                opacity: 1,
+                line: {
+                    color: "#111827",
+                    width: 4
+                }
+            },
+            hovertemplate:
+                "<b>%{text}</b><br>" +
+                "Uncited articles: %{x:.1%}<br>" +
+                "Top-10% citation share: %{y:.1%}" +
+                "<extra></extra>"
+        };
+
+        return Plotly.addTraces(gd, highlightTrace);
+    }
+
+    function highlightPoint(gd, point) {
+        return deleteExistingHighlight(gd)
+            .then(() => dimBackgroundAndActivatePoint(gd, point))
+            .then(() => addHighlightTrace(gd, point))
+            .then(() => {
+                note.innerHTML =
+                    "<strong>Selected journal:</strong> " + escapeHtml(point.journal) + "<br>" +
+                    "<strong>Regime:</strong> " + escapeHtml(point.regime) + "<br>" +
+                    "<strong>Uncited articles:</strong> " + formatPercent(point.x) + " &nbsp; | &nbsp; " +
+                    "<strong>Top-10% citation share:</strong> " + formatPercent(point.y) + "<br>" +
+                    "<strong>Articles:</strong> " + escapeHtml(point.nArticles) + " &nbsp; | &nbsp; " +
+                    "<strong>Total citations:</strong> " + escapeHtml(point.totalCitations) + " &nbsp; | &nbsp; " +
+                    "<strong>Mean:</strong> " + formatNumber(point.meanCitations, 2) + " &nbsp; | &nbsp; " +
+                    "<strong>Median:</strong> " + formatNumber(point.medianCitations, 2) + " &nbsp; | &nbsp; " +
+                    "<strong>95th percentile:</strong> " + formatNumber(point.p95Citations, 2) + " &nbsp; | &nbsp; " +
+                    "<strong>Gini:</strong> " + formatNumber(point.gini, 2);
+            });
+    }
+
+    function findMatches(points, query) {
+        const q = normalize(query);
+
+        if (!q) {
+            return [];
+        }
+
+        return points.filter(point => normalize(point.journal).includes(q));
+    }
+
+    function findBestMatch(points, query) {
+        const q = normalize(query);
+
+        if (!q) {
+            return null;
+        }
+
+        const exact = points.find(point => normalize(point.journal) === q);
+        if (exact) {
+            return exact;
+        }
+
+        const startsWith = points.find(point => normalize(point.journal).startsWith(q));
+        if (startsWith) {
+            return startsWith;
+        }
+
+        const contains = points.find(point => normalize(point.journal).includes(q));
+        if (contains) {
+            return contains;
+        }
+
+        return null;
+    }
+
+    function updateSelection(forceBestMatch) {
+        waitForGraph(function (gd) {
+            const query = input.value.trim();
+
+            if (!query) {
+                resetGraph(gd).then(() => {
+                    note.innerHTML = "No journal selected.";
+                });
+                return;
+            }
+
+            const points = collectPoints(gd);
+            const matches = findMatches(points, query);
+
+            if (matches.length === 0) {
+                resetGraph(gd).then(() => {
+                    note.innerHTML =
+                        "No journal found for: <strong>" + escapeHtml(query) + "</strong>.";
+                });
+                return;
+            }
+
+            const exact = matches.find(point => normalize(point.journal) === normalize(query));
+
+            if (exact) {
+                highlightPoint(gd, exact);
+                return;
+            }
+
+            if (matches.length === 1) {
+                input.value = matches[0].journal;
+                highlightPoint(gd, matches[0]);
+                return;
+            }
+
+            if (forceBestMatch) {
+                const best = findBestMatch(points, query);
+
+                if (best) {
+                    input.value = best.journal;
+                    highlightPoint(gd, best);
+                }
+
+                return;
+            }
+
+            resetGraph(gd).then(() => {
+                note.innerHTML =
+                    "<strong>" + matches.length + "</strong> journals match this query. " +
+                    "Choose one from the list or press Enter to highlight the best match.";
+            });
+        });
+    }
+
+    input.addEventListener("input", function () {
+        updateSelection(false);
+    });
+
+    input.addEventListener("change", function () {
+        updateSelection(true);
+    });
+
+    input.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            updateSelection(true);
+        }
+
+        if (event.key === "Escape") {
+            event.preventDefault();
+
+            waitForGraph(function (gd) {
+                input.value = "";
+                resetGraph(gd).then(() => {
+                    note.innerHTML = "No journal selected.";
+                });
+            });
+        }
+    });
+
+    clearButton.addEventListener("click", function () {
+        waitForGraph(function (gd) {
+            input.value = "";
+            resetGraph(gd).then(() => {
+                note.innerHTML = "No journal selected.";
+            });
+        });
+    });
+})();
+</script>
+
+<h2>Regime summary</h2>
+$summary_html
+
+<div class="footer-note">
+<strong>Interpretive caution.</strong>
+The chart describes citation visibility captured in Scopus, not journal quality.
+The results may be affected by database coverage, document type selection, publication age, language, disciplinary citation practices,
+and the completeness or consistency of journal-level metadata.
+</div>
+
+</body>
+</html>
+""")
+
+    html = html_template.substitute(
+        x_median_pct=f"{x_median:.1%}",
+        y_median_pct=f"{y_median:.1%}",
+        cards_html=cards_html,
+        journal_options_html=journal_options_html,
+        fig_html=fig_html,
+        summary_html=summary_html,
+    )
+
+    output_path.write_text(html, encoding="utf-8")
+
+
+# =========================================================
+# RUN
+# =========================================================
+
+metrics = get_or_compute_metrics(METRICS_PATH, ARTICLE_PATH)
+
+metrics = metrics[metrics["n_articles"] >= MIN_ARTICLES].copy()
+
+metrics, x_median, y_median, regime_definitions, regime_rules = classify_citation_regimes(metrics)
+
+metrics.to_excel(OUTPUT_METRICS, index=False)
+
+fig = build_regime_figure(metrics, x_median, y_median)
+
+write_html(
+    fig=fig,
+    metrics=metrics,
+    x_median=x_median,
+    y_median=y_median,
+    regime_definitions=regime_definitions,
+    regime_rules=regime_rules,
+    output_path=OUTPUT_HTML,
+)
+
+print(f"Saved interactive visualization to: {OUTPUT_HTML.resolve()}")
+print(f"Saved metrics with regimes to: {OUTPUT_METRICS.resolve()}")
 
 
 
