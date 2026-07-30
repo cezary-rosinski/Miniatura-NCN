@@ -326,7 +326,7 @@ with requests.Session() as session:
             result = future.result()
             results.append(result)
 
-results = [e for e in results if e.get('pdf_count_in_zip')]
+# results = [e for e in results if e.get('pdf_count_in_zip')]
 
 # =========================================================
 # SAVE RESULTS
