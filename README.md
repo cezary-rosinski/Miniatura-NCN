@@ -142,8 +142,8 @@ The reproducible code, documentation, redistributable derived data, OpenCitation
 
 ## Licensing
 
-- **Data:** `[TO BE ADDED after verifying the rights of each deposited component; CC0 or CC BY 4.0 is preferred where applicable]`
-- **Code:** `[TO BE ADDED]`
+- **Data:** CC BY 4.0
+- **Code:** MIT License
 
 Use separate licences for code and data. Do not include credentials, local user paths, full-text PDFs, or restricted source exports in a public release.
 
