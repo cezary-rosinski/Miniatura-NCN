@@ -138,7 +138,7 @@ data/final_pipeline_output/
 
 The reproducible code, documentation, redistributable derived data, OpenCitations exports, and current validation report are intended for deposition in Zenodo.
 
-**Zenodo DOI:** `[TO BE ADDED AFTER DEPOSIT]`
+**Zenodo DOI:** `[https://doi.org/10.5281/zenodo.21809680](https://doi.org/10.5281/zenodo.21809680)`
 
 ## Licensing
 
