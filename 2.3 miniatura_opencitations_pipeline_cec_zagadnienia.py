@@ -23,6 +23,16 @@ Recommended order on Windows:
 
    python miniatura_opencitations_pipeline_cec.py --stage oai
 
+If a completed OAI run fails only at the final ``oc_validator`` step, rebuild
+the export from the saved Crossref-enriched intermediate file instead of
+repeating AnyStyle and Crossref:
+
+   python miniatura_opencitations_pipeline_cec_zagadnienia.py --stage export
+
+Running this script without ``--stage`` selects that recovery path
+automatically when the enriched intermediate file already exists. Otherwise it
+runs the complete PDF and OAI workflow.
+
 Use ``--refresh-cec`` to ignore locally cached TEI files.
 """
 
@@ -46,6 +56,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -364,11 +375,36 @@ def stable_temp_id(*parts, prefix: str = "temp") -> str:
     return f"{prefix}:{sha256_text(key, 24)}"
 
 
+DOI_VALUE_PATTERN = re.compile(
+    r"^10\.(?:\d{4,9}|[^\s/]+(?:\.[^\s/]+)*)/[^\s]+$",
+    flags=re.IGNORECASE,
+)
+
+
 def normalize_doi(value) -> str:
     doi = clean_str(value).lower()
     doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi)
     doi = re.sub(r"^doi:\s*", "", doi)
-    return doi.strip().rstrip(".,;")
+    doi = doi.strip().strip("<>")
+    doi = doi.rstrip(".,;:")
+
+    # Closing brackets are often citation punctuation rather than part of the
+    # DOI. Remove them only when they are unbalanced so valid suffixes that use
+    # matched brackets are preserved.
+    bracket_pairs = {")": "(", "]": "[", "}": "{"}
+    while doi and doi[-1] in bracket_pairs:
+        closing = doi[-1]
+        opening = bracket_pairs[closing]
+        if doi.count(closing) <= doi.count(opening):
+            break
+        doi = doi[:-1].rstrip()
+
+    # ``oc_validator`` treats malformed DOI identifiers as data errors. An
+    # empty value makes the pipeline use a deterministic temp identifier,
+    # which is preferable to exporting e.g. ``doi:nan`` or a DOI with spaces.
+    if not DOI_VALUE_PATTERN.fullmatch(doi):
+        return ""
+    return doi
 
 
 def id_from_doi_or_temp(doi, *parts) -> str:
@@ -2008,22 +2044,55 @@ def normalize_page(value) -> tuple[str, str]:
     text = re.sub(r"(?i)\b(?:pp?|s)\.?\s*", "", text)
     text = re.sub(r"\s+", "", text)
 
-    token = r"(?:[A-Za-z]?\d+[A-Za-z]?|[ivxlcdmIVXLCDM]+)"
+    token = (
+        r"(?:\d+|[A-Za-zα-ωΑ-Ω]\d+|"
+        r"\d+[A-Za-zα-ωΑ-Ω]|[ivxlcdmIVXLCDM]+)"
+    )
     single = re.fullmatch(token, text)
-    if single:
-        return f"{text}-{text}", "single_page_expanded"
-
     interval = re.fullmatch(fr"({token})-({token})", text)
-    if not interval:
+    if not single and not interval:
         return "", f"unrepresentable_page_value:{original}"
 
+    def normalize_token(raw_token: str) -> str:
+        if re.fullmatch(r"[ivxlcdmIVXLCDM]+", raw_token):
+            return raw_token
+
+        match = re.fullmatch(
+            r"([A-Za-zα-ωΑ-Ω]?)(\d+)([A-Za-zα-ωΑ-Ω]?)",
+            raw_token,
+        )
+        if not match:
+            return ""
+
+        prefix, digits, suffix = match.groups()
+        if prefix and suffix:
+            return ""
+
+        number = int(digits)
+        if number < 1:
+            return ""
+        return f"{prefix}{number}{suffix}"
+
+    if single:
+        normalized = normalize_token(text)
+        if not normalized:
+            return "", f"unrepresentable_page_value:{original}"
+        return f"{normalized}-{normalized}", "single_page_expanded"
+
+    assert interval is not None
     start, end = interval.groups()
+    start = normalize_token(start)
+    end = normalize_token(end)
+    if not start or not end:
+        return "", f"unrepresentable_page_value:{original}"
+
     if start.isdigit() and end.isdigit() and len(end) < len(start):
         end = start[: len(start) - len(end)] + end
 
-    return f"{start}-{end}", (
+    normalized_interval = f"{start}-{end}"
+    return normalized_interval, (
         "normalized_page_interval"
-        if f"{start}-{end}" != original
+        if normalized_interval != original
         else ""
     )
 
@@ -2034,6 +2103,61 @@ def sanitize_text_field(value) -> str:
         .replace("[", "(")
         .replace("]", ")")
     )
+
+
+OC_PERSON_ITEM_PATTERN = re.compile(
+    r"^(?:[^\s,;\[\]]+(?:\s[^\s,;\[\]]+)*),?"
+    r"(?:\s[^\s,;\[\]]+)*$"
+)
+
+
+def normalize_agent_field(value) -> str:
+    """Return an OpenCitations-compliant author/editor field."""
+    raw_value = sanitize_text_field(value)
+    if not raw_value:
+        return ""
+
+    normalized_items = []
+    seen = set()
+    for raw_item in re.split(r"\s*;\s*", raw_value):
+        item = clean_str(raw_item).strip(" ,;")
+        if not item:
+            continue
+
+        comma_parts = [clean_str(part) for part in item.split(",")]
+        comma_parts = [part for part in comma_parts if part]
+        if len(comma_parts) > 1:
+            item = f"{comma_parts[0]}, {' '.join(comma_parts[1:])}"
+
+        if not OC_PERSON_ITEM_PATTERN.fullmatch(item):
+            item = clean_str(re.sub(r"[,;\[\]]+", " ", item))
+        if not item or not OC_PERSON_ITEM_PATTERN.fullmatch(item):
+            continue
+
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            normalized_items.append(item)
+
+    return "; ".join(normalized_items)
+
+
+def normalize_publisher_field(value) -> str:
+    raw_value = sanitize_text_field(value)
+    if not raw_value:
+        return ""
+
+    normalized_items = []
+    seen = set()
+    for raw_item in re.split(r"\s*;\s*", raw_value):
+        item = clean_str(raw_item)
+        if not item:
+            continue
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            normalized_items.append(item)
+    return "; ".join(normalized_items)
 
 
 def normalize_cited_metadata(
@@ -2047,15 +2171,15 @@ def normalize_cited_metadata(
     metadata = {
         "id": canonical_id,
         "title": sanitize_text_field(row.get("title", "")),
-        "author": sanitize_text_field(row.get("author", "")),
+        "author": normalize_agent_field(row.get("author", "")),
         "pub_date": extract_year(row.get("pub_date", "")),
         "venue": sanitize_text_field(row.get("venue", "")),
         "volume": sanitize_text_field(row.get("volume", "")),
         "issue": sanitize_text_field(row.get("issue", "")),
         "page": page,
         "type": normalize_type(raw_type),
-        "publisher": sanitize_text_field(row.get("publisher", "")),
-        "editor": sanitize_text_field(row.get("editor", "")),
+        "publisher": normalize_publisher_field(row.get("publisher", "")),
+        "editor": normalize_agent_field(row.get("editor", "")),
     }
 
     log_rows = []
@@ -2099,15 +2223,11 @@ def normalize_cited_metadata(
 
 
 def missing_required_fields(metadata: dict) -> list[str]:
-    identifiers = metadata["id"].split()
-    internal_only = bool(identifiers) and all(
+    identifiers = clean_str(metadata.get("id", "")).split()
+    internal_only = not identifiers or all(
         identifier.startswith(("temp:", "local:"))
         for identifier in identifiers
     )
-    if not internal_only:
-        return []
-
-    resource_type = metadata["type"]
     missing = []
 
     work_types = {
@@ -2146,25 +2266,51 @@ def missing_required_fields(metadata: dict) -> list[str]:
         "standard series",
     }
 
-    if resource_type in work_types:
-        if not metadata["title"]:
-            missing.append("title")
-        if not metadata["pub_date"]:
-            missing.append("pub_date")
-        if not metadata["author"] and not metadata["editor"]:
-            missing.append("author_or_editor")
-    elif resource_type in part_types:
-        if not metadata["title"]:
-            missing.append("title")
-        if not metadata["venue"]:
-            missing.append("venue")
-    elif resource_type in series_types:
-        if not metadata["title"]:
-            missing.append("title")
+    if internal_only:
+        resource_type = clean_str(metadata.get("type", ""))
+        if resource_type in work_types:
+            if not metadata.get("title"):
+                missing.append("title")
+            if not metadata.get("pub_date"):
+                missing.append("pub_date")
+            if not metadata.get("author") and not metadata.get("editor"):
+                missing.append("author_or_editor")
+        elif resource_type in part_types:
+            if not metadata.get("title"):
+                missing.append("title")
+            if not metadata.get("venue"):
+                missing.append("venue")
+        elif resource_type in series_types:
+            if not metadata.get("title"):
+                missing.append("title")
+        elif resource_type == "journal issue":
+            if not metadata.get("venue"):
+                missing.append("venue")
+            if not metadata.get("title") and not metadata.get("issue"):
+                missing.append("title_or_issue")
+        elif resource_type == "journal volume":
+            if not metadata.get("venue"):
+                missing.append("venue")
+            if not metadata.get("title") and not metadata.get("volume"):
+                missing.append("title_or_volume")
+        else:
+            # This branch mirrors oc_validator for an empty or unsupported
+            # type. It is mostly defensive because normalize_type() currently
+            # maps unknown source values to ``other``.
+            if not metadata.get("title"):
+                missing.append("title")
+            if not metadata.get("pub_date"):
+                missing.append("pub_date")
+            if not metadata.get("author") and not metadata.get("editor"):
+                missing.append("author_or_editor")
 
-    if metadata["volume"] and not metadata["venue"]:
+    # These two requirements apply to every META-CSV row, including resources
+    # with a DOI or another external identifier. The previous early return for
+    # such records was the reason oc_validator reported required_fields errors
+    # after the export had already been written.
+    if metadata.get("volume") and not metadata.get("venue"):
         missing.append("venue_required_by_volume")
-    if metadata["issue"] and not metadata["venue"]:
+    if metadata.get("issue") and not metadata.get("venue"):
         missing.append("venue_required_by_issue")
 
     return sorted(set(missing))
@@ -2206,7 +2352,7 @@ def build_citing_metadata_from_job(job: dict) -> dict:
     return {
         "id": citing_id,
         "title": sanitize_text_field(job.get("article_title", "")),
-        "author": sanitize_text_field("; ".join(authors)),
+        "author": normalize_agent_field("; ".join(authors)),
         "pub_date": extract_year(job.get("year", "")),
         "venue": sanitize_text_field(job.get("journal_title", "")),
         "volume": "",
@@ -2283,7 +2429,7 @@ def build_oc_export(
                     "cited_id": cited_id,
                     "raw_reference": row.get("raw_reference", ""),
                     "reason": (
-                        "incomplete_temp_metadata:"
+                        "incomplete_oc_metadata:"
                         + ",".join(missing)
                     ),
                 }
@@ -2472,18 +2618,72 @@ def _validator_prefix() -> list[str]:
     )
 
 
-def _count_validation_issues(path: Path) -> dict:
-    counts = {"error": 0, "warning": 0, "other": 0}
+def _read_validation_issues(path: Path) -> list[dict]:
+    issues = []
     if not path.exists() or path.stat().st_size == 0:
-        return counts
+        return issues
 
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
         if not line.strip():
             continue
-        issue = json.loads(line)
+        try:
+            issues.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid JSONL in {path} at line {line_number}."
+            ) from exc
+    return issues
+
+
+def _count_validation_issues(issues: list[dict]) -> dict:
+    counts = {"error": 0, "warning": 0, "other": 0}
+    for issue in issues:
         issue_type = issue.get("error_type", "other")
         counts[issue_type if issue_type in counts else "other"] += 1
     return counts
+
+
+def _validation_label_counts(
+    issues: list[dict],
+    issue_type: str,
+) -> dict[str, int]:
+    labels = Counter(
+        issue.get("error_label", "unlabelled")
+        for issue in issues
+        if issue.get("error_type") == issue_type
+    )
+    return dict(sorted(labels.items()))
+
+
+def _format_validation_error_summary(report: dict) -> str:
+    parts = []
+    for table_name, report_keys in [
+        ("metadata", ("metadata_error_labels",)),
+        # Current reports use the singular ``citation_*`` prefix. Accept the
+        # earlier plural spelling as well so an existing report can still be
+        # rendered instead of masking the actual validation errors.
+        (
+            "citations",
+            ("citation_error_labels", "citations_error_labels"),
+        ),
+    ]:
+        labels = next(
+            (
+                report[key]
+                for key in report_keys
+                if isinstance(report.get(key), dict)
+            ),
+            {},
+        )
+        if labels:
+            rendered = ", ".join(
+                f"{label}={count}" for label, count in labels.items()
+            )
+            parts.append(f"{table_name}: {rendered}")
+    return "; ".join(parts) or "unlabelled errors"
 
 
 def run_oc_validator(
@@ -2541,12 +2741,14 @@ def run_oc_validator(
         errors="replace",
     )
 
-    metadata_issues = _count_validation_issues(
+    metadata_issue_rows = _read_validation_issues(
         metadata_out / "out_validate_meta.jsonl"
     )
-    citation_issues = _count_validation_issues(
+    citation_issue_rows = _read_validation_issues(
         citations_out / "out_validate_cits.jsonl"
     )
+    metadata_issues = _count_validation_issues(metadata_issue_rows)
+    citation_issues = _count_validation_issues(citation_issue_rows)
     report = {
         "command": command,
         "returncode": result.returncode,
@@ -2554,6 +2756,22 @@ def run_oc_validator(
         "stderr": result.stderr,
         "metadata_issues": metadata_issues,
         "citation_issues": citation_issues,
+        "metadata_error_labels": _validation_label_counts(
+            metadata_issue_rows,
+            "error",
+        ),
+        "metadata_warning_labels": _validation_label_counts(
+            metadata_issue_rows,
+            "warning",
+        ),
+        "citation_error_labels": _validation_label_counts(
+            citation_issue_rows,
+            "error",
+        ),
+        "citation_warning_labels": _validation_label_counts(
+            citation_issue_rows,
+            "warning",
+        ),
         "skip_id_existence": VALIDATOR_SKIP_ID_EXISTENCE,
     }
     write_json(report, validation_dir / "oc_validator_report.json")
@@ -2568,8 +2786,11 @@ def run_oc_validator(
         )
     if total_errors:
         raise RuntimeError(
-            f"oc_validator found {total_errors} data errors. Inspect "
-            f"{validation_dir}."
+            f"oc_validator found {total_errors} data errors "
+            f"({_format_validation_error_summary(report)}). Inspect "
+            f"{validation_dir}. To rebuild the final export from the saved "
+            "Crossref-enriched file without repeating AnyStyle or Crossref, "
+            "run with --stage export."
         )
 
     return report
@@ -2697,14 +2918,109 @@ def run_oai_stage(
     }
 
 
+def load_cached_enriched_references() -> pd.DataFrame:
+    enriched_path = (
+        OAI_PIPELINE_DIR / "oai_references_crossref_enriched.csv"
+    )
+    if not enriched_path.exists():
+        raise FileNotFoundError(
+            "The cached Crossref-enriched reference file does not exist: "
+            f"{enriched_path}. Run --stage oai first."
+        )
+
+    enriched = pd.read_csv(
+        enriched_path,
+        dtype=str,
+        keep_default_na=False,
+    )
+    required_columns = {
+        "reference_key",
+        "identifier",
+        "publisher_id",
+        "article_doi",
+        "article_title",
+        "lang",
+        "citing_id",
+        "raw_reference",
+        "title",
+        "author",
+        "pub_date",
+        "venue",
+        "volume",
+        "issue",
+        "page",
+        "type",
+        "doi",
+        "doi_enriched",
+        "crossref_type",
+    }
+    missing_columns = required_columns - set(enriched.columns)
+    if missing_columns:
+        raise ValueError(
+            f"The cached enriched file is missing columns: "
+            f"{sorted(missing_columns)}"
+        )
+    if enriched.empty:
+        raise ValueError(f"The cached enriched file is empty: {enriched_path}")
+
+    # Recompute citing IDs with the current DOI normalizer. This also makes the
+    # recovery path safe when the failed run cached an identifier such as
+    # ``doi:nan`` that the corrected code now replaces with a temp ID.
+    enriched["citing_id"] = enriched.apply(
+        lambda row: id_from_doi_or_temp(
+            row.get("article_doi", ""),
+            row.get("identifier", ""),
+            row.get("publisher_id", ""),
+            row.get("article_title", ""),
+            row.get("lang", ""),
+        ),
+        axis=1,
+    )
+    return enriched
+
+
+def run_export_stage(
+    jobs: pd.DataFrame,
+    run_validation: bool,
+) -> dict:
+    """Rebuild final OC files from the saved post-Crossref intermediate."""
+    enriched = load_cached_enriched_references()
+    canonical, mappings = deduplicate_records(enriched)
+    metadata, citations, exclusions = build_oc_export(
+        jobs=jobs,
+        enriched=enriched,
+        canonical=canonical,
+        mappings=mappings,
+    )
+
+    validation_report = None
+    if run_validation:
+        validation_report = run_oc_validator(
+            metadata_path=OAI_PIPELINE_DIR / "example_metadata.csv",
+            citations_path=OAI_PIPELINE_DIR / "example_citations.csv",
+        )
+
+    return {
+        "jobs": len(jobs),
+        "cached_enriched_references": len(enriched),
+        "canonical_cited_records": len(canonical),
+        "oc_metadata_rows": len(metadata),
+        "oc_citation_rows": len(citations),
+        "oc_excluded_reference_instances": len(exclusions),
+        "validation_completed": validation_report is not None,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--stage",
-        choices=["pdf", "oai", "validate", "all"],
-        default="all",
+        choices=["auto", "pdf", "oai", "export", "validate", "all"],
+        default="auto",
         help=(
+            "auto: resume from cached Crossref enrichment when available; "
             "pdf: only CEC/GROBID pilot; oai: OAI-PMH to OpenCitations; "
+            "export: rebuild final files from cached Crossref enrichment; "
             "validate: validate existing exports; all: pdf and oai"
         ),
     )
@@ -2735,11 +3051,32 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     ensure_output_dirs()
-    manifest = base_run_manifest(args.stage)
+    requested_stage = args.stage
+    effective_stage = requested_stage
+    if requested_stage == "auto":
+        cached_enriched_path = (
+            OAI_PIPELINE_DIR / "oai_references_crossref_enriched.csv"
+        )
+        effective_stage = (
+            "export" if cached_enriched_path.exists() else "all"
+        )
+        LOGGER.info(
+            "Automatic stage selection: %s (%s).",
+            effective_stage,
+            (
+                f"found {cached_enriched_path}"
+                if cached_enriched_path.exists()
+                else "no cached Crossref-enriched file"
+            ),
+        )
+
+    manifest = base_run_manifest(effective_stage)
+    manifest["requested_stage"] = requested_stage
+    manifest["effective_stage"] = effective_stage
     manifest["pdf_pilot"]["sample_size"] = args.sample_size
 
     try:
-        if args.stage == "validate":
+        if effective_stage == "validate":
             report = run_oc_validator(
                 metadata_path=OAI_PIPELINE_DIR / "example_metadata.csv",
                 citations_path=OAI_PIPELINE_DIR / "example_citations.csv",
@@ -2748,7 +3085,7 @@ def main() -> None:
             manifest["validation"] = report
         else:
             jobs = load_jobs()
-            if args.stage in {"pdf", "all"}:
+            if effective_stage in {"pdf", "all"}:
                 manifest["counts"].update(
                     run_pdf_stage(
                         jobs,
@@ -2756,11 +3093,18 @@ def main() -> None:
                         refresh_cec=args.refresh_cec,
                     )
                 )
-            if args.stage in {"oai", "all"}:
+            if effective_stage in {"oai", "all"}:
                 manifest["counts"].update(
                     run_oai_stage(
                         jobs,
                         skip_crossref=args.skip_crossref,
+                        run_validation=not args.no_validate,
+                    )
+                )
+            if effective_stage == "export":
+                manifest["counts"].update(
+                    run_export_stage(
+                        jobs,
                         run_validation=not args.no_validate,
                     )
                 )
